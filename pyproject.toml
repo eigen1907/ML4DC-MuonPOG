@@ -1,0 +1,17 @@
+[project]
+name = "ML4DC-MuonPOG"
+version = "0.1.0"
+description = "Small per-lumisection DIALS study for CMS Muon data certification"
+requires-python = ">=3.12"
+dependencies = [
+    "cmsdials==2.2.0",
+    "pandas",
+    "pyarrow",
+    "numpy",
+    "matplotlib",
+    "mplhep",
+    "scikit-learn>=1.9.1",
+]
+
+[tool.uv]
+package = false

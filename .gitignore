@@ -1,0 +1,7 @@
+.venv/
+.uv-cache/
+.cache/
+__pycache__/
+data/
+plots/
+results/
