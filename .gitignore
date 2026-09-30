@@ -1,7 +1,13 @@
+.DS_Store
 .venv/
 .uv-cache/
 .cache/
 __pycache__/
-data/
-plots/
-results/
+*.py[cod]
+
+/data/*
+!/data/run_labels.csv
+/plots/*
+!/plots/.gitkeep
+/results/*
+!/results/.gitkeep

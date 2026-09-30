@@ -2,7 +2,6 @@
 
 import json
 import pickle
-import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -22,15 +21,6 @@ SEED = 42
 THRESHOLD_QUANTILE = 0.95
 EPOCHS = 80
 ETA_ME = "Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta.parquet"
-
-
-def run_groups() -> tuple[set[int], set[int], set[int]]:
-    """Read the user's three-section run note; ambiguous takes priority over bad."""
-    parts = re.split(r"(?m)^(not really bad runs|bad runs|all runs)\s*$", Path("examples/2025.csv").read_text())
-    groups = {name: {int(x) for x in re.findall(r"\b\d{6}\b", body)} for name, body in zip(parts[1::2], parts[2::2])}
-    ambiguous = groups["not really bad runs"]
-    bad = groups["bad runs"] - ambiguous
-    return groups["all runs"], bad, ambiguous
 
 
 def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
@@ -136,10 +126,15 @@ def plot_diagnostics(scores: pd.DataFrame, train_losses: list[float], val_losses
 def main() -> None:
     manifest = pd.read_csv("data/runs.csv")
     manifest = manifest[manifest.dataset.str.contains(r"/Run2025[A-Z]-PromptReco-v\d+/DQMIO$")].copy()
-    listed, bad, ambiguous = run_groups()
+    labels = pd.read_csv("data/run_labels.csv")
+    allowed = {"good", "bad_well_known", "bad_ambiguous"}
+    listed = set(labels.run_number)
+    bad = set(labels.loc[labels.label == "bad_well_known", "run_number"])
+    ambiguous = set(labels.loc[labels.label == "bad_ambiguous", "run_number"])
     runs = set(manifest.run_number)
-    if len(manifest) != len(runs) or runs != listed or not bad or not ambiguous:
-        raise SystemExit("PromptReco run list and examples/2025.csv do not agree")
+    if (len(manifest) != len(runs) or len(labels) != len(listed) or runs != listed
+            or not labels.label.isin(allowed).all() or not bad or not ambiguous):
+        raise SystemExit("PromptReco runs and data/run_labels.csv do not agree")
     manifest["era"] = manifest.dataset.str.extract(r"Run(2025[A-Z])")[0]
     good = manifest[~manifest.run_number.isin(bad | ambiguous)]
     train, holdout = train_test_split(good, train_size=0.70, random_state=SEED, stratify=good.era)
