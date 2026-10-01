@@ -9,5 +9,10 @@ __pycache__/
 !/data/run_labels.csv
 /plots/*
 !/plots/.gitkeep
-/results/*
-!/results/.gitkeep
+/result/*
+!/result/ae_base/
+!/result/ae_bin/
+/result/ae_base/*
+!/result/ae_base/.gitkeep
+/result/ae_bin/*
+!/result/ae_bin/.gitkeep

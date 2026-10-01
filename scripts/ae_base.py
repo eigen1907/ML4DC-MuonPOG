@@ -16,7 +16,7 @@ from sklearn.preprocessing import StandardScaler
 
 
 RAW = Path("data/raw")
-OUT = Path("results")
+OUT = Path("result/ae_base")
 SEED = 42
 THRESHOLD_QUANTILE = 0.95
 EPOCHS = 80
@@ -187,7 +187,7 @@ def main() -> None:
     threshold = float(data.loc[data.split == "validation", "anomaly_score"].quantile(THRESHOLD_QUANTILE))
     data["flagged"] = data.anomaly_score > threshold
 
-    OUT.mkdir(exist_ok=True)
+    OUT.mkdir(parents=True, exist_ok=True)
     scores = data[["dataset", "run_number", "ls_number", "era", "label", "split", "eta_entries", "anomaly_score", "flagged"]]
     scores.to_parquet(OUT / "scores.parquet", index=False)
     with (OUT / "model.pkl").open("wb") as output:

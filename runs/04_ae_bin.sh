@@ -2,4 +2,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-uv run --locked python scripts/experiment.py
+uv run --locked python scripts/ae_bin.py
