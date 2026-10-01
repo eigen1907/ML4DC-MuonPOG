@@ -23,6 +23,7 @@ TRAIN_LS = 20_000
 VALIDATION_LS = 5_000
 EPOCHS = 20
 THRESHOLD_QUANTILE = 0.95
+ENTRY_EDGES = (0, 100, 1_000, 5_000)
 CASES = {"good": 397780, "bad_well_known": 397765, "bad_ambiguous": 395713}
 LABELS = {"good": "Good", "bad_well_known": "Bad (well known)",
           "bad_ambiguous": "Bad (ambiguous)"}
@@ -112,29 +113,46 @@ def main() -> None:
         if epoch % 5 == 0:
             print(f"Epoch {epoch}/{EPOCHS}: train {train_losses[-1]:.4f}, validation {val_losses[-1]:.4f}", flush=True)
 
+    bounds = np.cumsum([0] + [axes[name][0] for name in me_files])
+    error_columns = [f"me_error_{index}" for index in range(len(me_files))]
     frames, selected = [], {}
     for index, ((dataset, run), group) in enumerate(metadata.groupby(["dataset", "run_number"], sort=False), 1):
         group = group.sort_values("ls_number").copy()
         original = load_bins(group, me_files, axes)
         scaled = scaler.transform(np.log1p(original))
         reconstructed = model.predict(scaled)
-        # This baseline weights every bin equally, so wider MEs contribute more.
-        group["anomaly_score"] = np.mean((scaled - reconstructed) ** 2, axis=1)
+        squared_error = (scaled - reconstructed) ** 2
+        for column, start, stop in zip(error_columns, bounds[:-1], bounds[1:]):
+            group[column] = squared_error[:, start:stop].mean(axis=1)
         frames.append(group)
         if run in CASES.values():
-            selected[run] = (group, original, reconstructed)
+            selected[run] = (original, reconstructed)
         if index % 100 == 0:
             print(f"Scored {index}/{metadata.run_number.nunique()} runs", flush=True)
     scores = pd.concat(frames, ignore_index=True)
+    calibration = scores.loc[scores.split == "validation", error_columns].quantile(THRESHOLD_QUANTILE)
+    if not np.isfinite(calibration).all() or (calibration <= 0).any():
+        raise ValueError("Invalid validation ME error scale")
+    scores["anomaly_score"] = scores[error_columns].div(calibration).mean(axis=1)
+    scores = scores.drop(columns=error_columns)
+    # Compare LS with similar histogram statistics before using one fixed threshold.
+    entry_band = np.digitize(scores.eta_entries.to_numpy(), ENTRY_EDGES, right=True)
+    validation_mask = scores.split.eq("validation").to_numpy()
+    occupancy_scale = scores.loc[validation_mask].groupby(entry_band[validation_mask]).anomaly_score.quantile(THRESHOLD_QUANTILE)
+    if len(occupancy_scale) != len(ENTRY_EDGES) + 1 or not np.isfinite(occupancy_scale).all() or (occupancy_scale <= 0).any():
+        raise ValueError("Invalid validation occupancy scale")
+    scores["anomaly_score"] /= occupancy_scale.to_numpy()[entry_band]
     if len(scores) != len(metadata) or not np.isfinite(scores.anomaly_score).all() or (scores.anomaly_score <= 0).any():
         raise ValueError("Incomplete or invalid bin-AE scores")
-    threshold = float(scores.loc[scores.split == "validation", "anomaly_score"].quantile(THRESHOLD_QUANTILE))
+    threshold = 1.0
     scores["flagged"] = scores.anomaly_score > threshold
 
     OUT.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(OUT / "scores.parquet", index=False)
     with (OUT / "model.pkl").open("wb") as output:
         pickle.dump({"model": model, "scaler": scaler, "me_files": me_files, "axes": axes,
+                     "me_error_q95": dict(zip(me_files, calibration.to_numpy())),
+                     "entry_edges": ENTRY_EDGES, "occupancy_score_q95": occupancy_scale.to_numpy(),
                      "threshold": threshold, "seed": SEED,
                      "train_losses": train_losses, "validation_losses": val_losses}, output)
     hep.style.use("CMS")
@@ -152,7 +170,8 @@ def main() -> None:
     for label, run in CASES.items():
         if run not in selected:
             raise ValueError(f"Expected one complete test run: {label} {run}")
-        rows, original, reconstructed = selected[run]
+        rows = scores.loc[scores.run_number == run].sort_values("ls_number")
+        original, reconstructed = selected[run]
         if rows.label.nunique() != 1 or rows.label.iloc[0] != label or rows.split.nunique() != 1 or rows.split.iloc[0] != "test":
             raise ValueError(f"Run is not in its expected test group: {run}")
         predicted_log = scaler.inverse_transform(reconstructed)
@@ -168,7 +187,7 @@ def main() -> None:
             offset += bins
         cases[label] = {"run": run, "era": rows.era.iloc[0], "ls": len(rows),
                         "flagged_ls_fraction": float(scores.loc[(scores.run_number == run), "flagged"].mean()),
-                        "reconstruction_mse_scaled_log_counts": float(rows.anomaly_score.mean())}
+                        "mean_anomaly_score": float(rows.anomaly_score.mean())}
         print(f"Saved 30 ME figures for {LABELS[label]} run {run}", flush=True)
     groups = {"train_good": scores.split == "train", "validation_good": scores.split == "validation",
               "test_good": (scores.split == "test") & (scores.label == "good"),
@@ -183,7 +202,11 @@ def main() -> None:
         "validation_reconstruction_mse": val_losses[-1],
         "threshold_quantile": THRESHOLD_QUANTILE,
         "threshold": threshold,
-        "score": "Mean squared error over 1080 standardized log1p bin counts per LS",
+        "score": "Mean of 10 validation-scaled ME bin errors, divided by the Good-validation 95th percentile for its eta-entries band",
+        "me_error_q95_validation_good": dict(zip(me_files, calibration.tolist())),
+        "eta_entries_band_edges": ENTRY_EDGES,
+        "validation_ls_per_eta_entries_band": np.bincount(entry_band[validation_mask], minlength=len(ENTRY_EDGES) + 1).tolist(),
+        "occupancy_score_q95_validation_good": occupancy_scale.tolist(),
         "flagged_ls_fraction_by_group": {name: float(scores.loc[mask, "flagged"].mean()) for name, mask in groups.items()},
         "prediction": "Inverse scaling and expm1; negative predicted counts clipped to zero for display",
         "cases": cases,
