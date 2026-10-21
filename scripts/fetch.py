@@ -11,7 +11,7 @@ from cmsdials.filters import LumisectionHistogram1DFilters
 def fetch_one(dials: Dials, dataset: str, run: int, me: str) -> bool | None:
     """Return True if saved, False if cached, or None if no rows exist."""
     output = (
-        Path("data/raw")
+        Path("output/dataset/raw")
         / dataset.strip("/").replace("/", "__")
         / str(run)
         / (me.replace("/", "__") + ".parquet")

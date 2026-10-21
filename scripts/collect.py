@@ -34,8 +34,8 @@ def main() -> None:
     if not runs or not mes:
         raise RuntimeError("No matching runs or Muons/ 1D MEs")
 
-    Path("data").mkdir(exist_ok=True)
-    with Path("data/runs.csv").open("w", newline="") as output:
+    Path("output/dataset").mkdir(parents=True, exist_ok=True)
+    with Path("output/dataset/runs.csv").open("w", newline="") as output:
         writer = csv.writer(output)
         writer.writerow(["dataset", "run_number", "ls_count", "ls_completeness"])
         writer.writerows(

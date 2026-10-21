@@ -8,4 +8,4 @@ uv run --locked python scripts/fetch.py \
   --me 'Muons/MuonRecoAnalyzer/GlbMuon_Glb_eta'
 
 uv run --locked python scripts/plot.py \
-  --input 'data/raw/Muon0__Run2025D-PromptReco-v1__DQMIO/395719/Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta.parquet'
+  --input 'output/dataset/raw/Muon0__Run2025D-PromptReco-v1__DQMIO/395719/Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta.parquet'

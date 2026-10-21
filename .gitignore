@@ -7,12 +7,16 @@ __pycache__/
 
 /data/*
 !/data/run_labels.csv
-/plots/*
-!/plots/.gitkeep
-/result/*
-!/result/ae_base/
-!/result/ae_bin/
-/result/ae_base/*
-!/result/ae_base/.gitkeep
-/result/ae_bin/*
-!/result/ae_bin/.gitkeep
+/output/*
+!/output/dataset/
+!/output/model/
+!/output/predict/
+!/output/plots/
+/output/dataset/*
+!/output/dataset/.gitkeep
+/output/model/*
+!/output/model/.gitkeep
+/output/predict/*
+!/output/predict/.gitkeep
+/output/plots/*
+!/output/plots/.gitkeep

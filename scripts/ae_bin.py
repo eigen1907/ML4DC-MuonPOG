@@ -15,9 +15,11 @@ from sklearn.preprocessing import StandardScaler
 from ae_base import plot_diagnostics, plot_scores
 
 
-RAW = Path("data/raw")
-BASE = Path("result/ae_base")
-OUT = Path("result/ae_bin")
+RAW = Path("output/dataset/raw")
+BASE = Path("output/predict/ae_base")
+MODEL = Path("output/model/ae_bin")
+PREDICT = Path("output/predict/ae_bin")
+PLOTS = Path("output/plots/ae_bin")
 SEED = 42
 TRAIN_LS = 20_000
 VALIDATION_LS = 5_000
@@ -147,17 +149,18 @@ def main() -> None:
     threshold = 1.0
     scores["flagged"] = scores.anomaly_score > threshold
 
-    OUT.mkdir(parents=True, exist_ok=True)
-    scores.to_parquet(OUT / "scores.parquet", index=False)
-    with (OUT / "model.pkl").open("wb") as output:
+    MODEL.mkdir(parents=True, exist_ok=True)
+    PREDICT.mkdir(parents=True, exist_ok=True)
+    scores.to_parquet(PREDICT / "scores.parquet", index=False)
+    with (MODEL / "model.pkl").open("wb") as output:
         pickle.dump({"model": model, "scaler": scaler, "me_files": me_files, "axes": axes,
                      "me_error_q95": dict(zip(me_files, calibration.to_numpy())),
                      "entry_edges": ENTRY_EDGES, "occupancy_score_q95": occupancy_scale.to_numpy(),
                      "threshold": threshold, "seed": SEED,
                      "train_losses": train_losses, "validation_losses": val_losses}, output)
     hep.style.use("CMS")
-    plot_dir = OUT / "plots"
-    plot_dir.mkdir(exist_ok=True)
+    plot_dir = PLOTS
+    plot_dir.mkdir(parents=True, exist_ok=True)
     for old in plot_dir.glob("*.png"):
         old.unlink()
     for era, group in scores.groupby("era"):
@@ -176,7 +179,7 @@ def main() -> None:
             raise ValueError(f"Run is not in its expected test group: {run}")
         predicted_log = scaler.inverse_transform(reconstructed)
         predicted = np.maximum(np.expm1(predicted_log), 0)
-        out = OUT / "reconstructions" / f"{label}_{run}"
+        out = PLOTS / "reconstructions" / f"{label}_{run}"
         offset = 0
         for name in me_files:
             bins = axes[name][0]
@@ -193,7 +196,7 @@ def main() -> None:
               "test_good": (scores.split == "test") & (scores.label == "good"),
               "test_bad_well_known": (scores.split == "test") & (scores.label == "bad_well_known"),
               "test_bad_ambiguous": (scores.split == "test") & (scores.label == "bad_ambiguous")}
-    (OUT / "metrics.json").write_text(json.dumps({
+    (PREDICT / "metrics.json").write_text(json.dumps({
         "inputs": "All stored bin contents from 10 Muons MEs, log1p then per-bin StandardScaler",
         "architecture": "1080-32-8-32-1080", "epochs": EPOCHS, "seed": SEED,
         "training_ls_sampled_from_good_runs": len(train),
@@ -211,9 +214,9 @@ def main() -> None:
         "prediction": "Inverse scaling and expm1; negative predicted counts clipped to zero for display",
         "cases": cases,
     }, indent=2) + "\n")
-    lines = ["# Bin-AE plots", "", "[All LS scores](plots/all.png) · [Test LS scores](plots/test.png) · "
-             "[Distributions](plots/distributions.png) · [Loss](plots/loss.png)", "",
-             "Era plots: " + " · ".join(f"[{era}](plots/{era}.png)" for era in sorted(scores.era.unique())), "",
+    lines = ["# Bin-AE plots", "", "[All LS scores](all.png) · [Test LS scores](test.png) · "
+             "[Distributions](distributions.png) · [Loss](loss.png)", "",
+             "Era plots: " + " · ".join(f"[{era}]({era}.png)" for era in sorted(scores.era.unique())), "",
              "Each ME view uses LS on the horizontal axis and histogram position on the vertical axis.", ""]
     for label, run in CASES.items():
         lines += [f"## {LABELS[label]} — run {run}", "", "| ME | Original | AE prediction | Original - prediction |",
@@ -225,8 +228,8 @@ def main() -> None:
                      (("Original", "original"), ("Prediction", "prediction"), ("Residual", "residual"))]
             lines.append(f"| {stem.replace('__', ' / ')} | {' | '.join(links)} |")
         lines.append("")
-    (OUT / "plots.md").write_text("\n".join(lines) + "\n")
-    print(f"Saved {len(scores):,} bin-AE LS scores and 10 summary plots in {OUT}")
+    (PLOTS / "plots.md").write_text("\n".join(lines) + "\n")
+    print(f"Saved {len(scores):,} bin-AE LS scores and 10 summary plots in output/")
 
 
 if __name__ == "__main__":

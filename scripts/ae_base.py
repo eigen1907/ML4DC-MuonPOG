@@ -15,8 +15,10 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
 
-RAW = Path("data/raw")
-OUT = Path("result/ae_base")
+RAW = Path("output/dataset/raw")
+MODEL = Path("output/model/ae_base")
+PREDICT = Path("output/predict/ae_base")
+PLOTS = Path("output/plots/ae_base")
 SEED = 42
 THRESHOLD_QUANTILE = 0.95
 EPOCHS = 80
@@ -124,7 +126,7 @@ def plot_diagnostics(scores: pd.DataFrame, train_losses: list[float], val_losses
 
 
 def main() -> None:
-    manifest = pd.read_csv("data/runs.csv")
+    manifest = pd.read_csv("output/dataset/runs.csv")
     manifest = manifest[manifest.dataset.str.contains(r"/Run2025[A-Z]-PromptReco-v\d+/DQMIO$")].copy()
     labels = pd.read_csv("data/run_labels.csv")
     allowed = {"good", "bad_well_known", "bad_ambiguous"}
@@ -187,10 +189,11 @@ def main() -> None:
     threshold = float(data.loc[data.split == "validation", "anomaly_score"].quantile(THRESHOLD_QUANTILE))
     data["flagged"] = data.anomaly_score > threshold
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    MODEL.mkdir(parents=True, exist_ok=True)
+    PREDICT.mkdir(parents=True, exist_ok=True)
     scores = data[["dataset", "run_number", "ls_number", "era", "label", "split", "eta_entries", "anomaly_score", "flagged"]]
-    scores.to_parquet(OUT / "scores.parquet", index=False)
-    with (OUT / "model.pkl").open("wb") as output:
+    scores.to_parquet(PREDICT / "scores.parquet", index=False)
+    with (MODEL / "model.pkl").open("wb") as output:
         pickle.dump({"model": model, "scaler": scaler, "threshold": threshold,
                      "features": features, "seed": SEED,
                      "train_losses": train_losses, "validation_losses": val_losses,
@@ -213,11 +216,11 @@ def main() -> None:
         "ls_counts": {name: int(mask.sum()) for name, mask in groups.items()},
         "flagged_ls_fraction_by_group": {name: float(scores.loc[mask, "flagged"].mean()) for name, mask in groups.items()},
     }
-    (OUT / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+    (PREDICT / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
 
     hep.style.use("CMS")
-    plot_dir = OUT / "plots"
-    plot_dir.mkdir(exist_ok=True)
+    plot_dir = PLOTS
+    plot_dir.mkdir(parents=True, exist_ok=True)
     for old_plot in plot_dir.glob("*.png"):
         old_plot.unlink()
     for era, frame in scores.groupby("era"):
@@ -226,7 +229,7 @@ def main() -> None:
     test_scores = scores[scores.split == "test"]
     plot_scores(test_scores, threshold, "2025 test", plot_dir / "test.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
-    print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 4} plots in {OUT}")
+    print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 4} plots in output/")
     print(f"Provisional-good test LS flag fraction: {metrics['flagged_ls_fraction_by_group']['test_good']:.3%}")
 
 

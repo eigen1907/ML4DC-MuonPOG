@@ -1,4 +1,4 @@
-"""Make three CMS-style diagnostic figures from one cached 1D ME."""
+"""Make CMS-style diagnostic figures from one cached 1D ME."""
 
 import argparse
 from pathlib import Path
@@ -9,13 +9,19 @@ import numpy as np
 import pandas as pd
 
 
+def header(fig, era: str, title: str) -> None:
+    fig.text(0.12, 0.98, r"$\bf{CMS}$ Work in Progress", va="top")
+    fig.text(0.96, 0.98, era, ha="right", va="top")
+    fig.suptitle(title, y=0.87)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Parquet file from fetch.py")
     args = parser.parse_args()
 
     frame = pd.read_parquet(args.input).sort_values("ls_number")
-    if frame.empty or frame.me.nunique() != 1 or frame.run_number.nunique() != 1:
+    if frame.empty or frame.me.nunique() != 1 or frame.run_number.nunique() != 1 or frame.dataset.nunique() != 1:
         raise SystemExit("Expected one nonempty ME and one run in the cached file")
     counts = np.stack(frame["data"].to_numpy()).astype(float)
     ls = frame.ls_number.to_numpy(dtype=int)
@@ -27,6 +33,8 @@ def main() -> None:
     run = int(frame.iloc[0].run_number)
     me = str(frame.iloc[0].me)
     short_me = me.rsplit("/", 1)[-1]
+    title = f"Run {run} | {me.split('/')[1]}\n{short_me} | {len(ls)} LS"
+    era = str(frame.iloc[0].dataset).split("/")[2].split("-")[0].removeprefix("Run")
     axis_label = "ME x axis"
     if short_me.endswith("_eta"):
         axis_label = "Muon $\\eta$"
@@ -34,14 +42,24 @@ def main() -> None:
         axis_label = "Muon $p_T$"
     elif short_me.endswith("_phi"):
         axis_label = "Muon $\\phi$"
-    out = Path("plots") / args.input.relative_to("data/raw").with_suffix("")
+    out = Path("output/plots/mes") / args.input.relative_to("output/dataset/raw").with_suffix("")
     out.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+    fig.subplots_adjust(left=0.12, right=0.96, bottom=0.13, top=0.64)
+    ax.stairs(counts.sum(axis=0), edges)
+    ax.set(xlabel=axis_label, ylabel="Bin count")
+    if short_me.endswith("_pt"):
+        ax.set_yscale("log")
+    header(fig, era, title)
+    fig.savefig(out / "histogram.png", dpi=160)
+    plt.close(fig)
 
     grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
     grid[ls - ls.min()] = counts
     fig, ax = plt.subplots(figsize=(15, 8))
-    fig.subplots_adjust(left=0.10, right=0.86, bottom=0.13, top=0.78)
+    fig.subplots_adjust(left=0.10, right=0.86, bottom=0.13, top=0.65)
     image = ax.imshow(
         grid.T,
         origin="lower",
@@ -51,12 +69,12 @@ def main() -> None:
     )
     fig.colorbar(image, ax=ax, label="Bin content")
     ax.set(xlabel="Lumisection", ylabel=axis_label)
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=f"Run {run} | {short_me}")
+    header(fig, era, title)
     fig.savefig(out / "contents.png", dpi=160)
     plt.close(fig)
 
     fig, (top, bottom) = plt.subplots(2, 1, figsize=(15, 9), sharex=True)
-    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.10, top=0.78, hspace=0.10)
+    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.10, top=0.65, hspace=0.10)
     totals = counts.sum(axis=1)
     mean_x = np.divide(
         counts @ centers,
@@ -68,22 +86,22 @@ def main() -> None:
     bottom.plot(ls, mean_x, marker=".", linestyle="none")
     top.set(ylabel="Sum of bin contents")
     bottom.set(xlabel="Lumisection", ylabel=f"Mean {axis_label}")
-    hep.cms.label(ax=top, text="Work in Progress", data=True, com=None, rlabel=f"Run {run} | {short_me}")
+    header(fig, era, title)
     fig.savefig(out / "statistics.png", dpi=160)
     plt.close(fig)
 
     nonzero = np.flatnonzero(totals > 0)
     selected = sorted({int(nonzero[0]), int(nonzero[len(nonzero) // 2]), int(nonzero[-1])}) if len(nonzero) else [0]
     fig, ax = plt.subplots(figsize=(15, 8))
-    fig.subplots_adjust(left=0.13, right=0.96, bottom=0.13, top=0.78)
+    fig.subplots_adjust(left=0.13, right=0.96, bottom=0.13, top=0.65)
     for index in selected:
         ax.stairs(counts[index], edges, label=f"LS {ls[index]}")
     ax.set(xlabel=axis_label, ylabel="Bin content")
     ax.legend(frameon=False)
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=f"Run {run} | {short_me}")
+    header(fig, era, title)
     fig.savefig(out / "examples.png", dpi=160)
     plt.close(fig)
-    print("Saved three figures in", out)
+    print("Saved four figures in", out)
 
 
 if __name__ == "__main__":
