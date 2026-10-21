@@ -3,18 +3,19 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 index=output/plots/mes/plots.md
+rm -rf output/plots/mes
 mkdir -p "$(dirname "$index")"
 printf '# Raw Muons ME plots\n\n' > "$index"
 
 for folder in \
-  output/dataset/raw/Muon0__Run2025F-PromptReco-v2__DQMIO/397780 \
-  output/dataset/raw/Muon0__Run2025F-PromptReco-v2__DQMIO/397765 \
-  output/dataset/raw/Muon0__Run2025D-PromptReco-v1__DQMIO/395713; do
+  output/dataset/raw/Muon0__Run2025F-PromptReco-v1__DQMIO/397332 \
+  output/dataset/raw/Muon0__Run2025E-PromptReco-v1__DQMIO/396153 \
+  output/dataset/raw/Muon0__Run2025D-PromptReco-v1__DQMIO/395723; do
   run=${folder##*/}
   case "$run" in
-    397780) label=Good ;;
-    397765) label='Bad (well known)' ;;
-    395713) label='Bad (ambiguous)' ;;
+    397332) label=Good ;;
+    396153) label='Bad (well known)' ;;
+    395723) label='Bad (ambiguous)' ;;
   esac
   relative=${folder#output/dataset/raw/}
   printf '## %s — Run %s\n\n| ME | 1D histogram | LS examples | LS map | Statistics |\n|---|---|---|---|---|\n' "$label" "$run" >> "$index"

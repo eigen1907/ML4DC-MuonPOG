@@ -9,10 +9,9 @@ import numpy as np
 import pandas as pd
 
 
-def header(fig, era: str, title: str) -> None:
+def header(fig, era: str) -> None:
     fig.text(0.12, 0.98, r"$\bf{CMS}$ Work in Progress", va="top")
     fig.text(0.96, 0.98, era, ha="right", va="top")
-    fig.suptitle(title, y=0.87)
 
 
 def main() -> None:
@@ -30,10 +29,7 @@ def main() -> None:
         raise SystemExit("Histogram ranges vary across LS; inspect before plotting")
     edges = np.linspace(x_min, x_max, counts.shape[1] + 1)
     centers = (edges[:-1] + edges[1:]) / 2
-    run = int(frame.iloc[0].run_number)
-    me = str(frame.iloc[0].me)
-    short_me = me.rsplit("/", 1)[-1]
-    title = f"Run {run} | {me.split('/')[1]}\n{short_me} | {len(ls)} LS"
+    short_me = str(frame.iloc[0].me).rsplit("/", 1)[-1]
     era = str(frame.iloc[0].dataset).split("/")[2].split("-")[0].removeprefix("Run")
     axis_label = "ME x axis"
     if short_me.endswith("_eta"):
@@ -47,19 +43,19 @@ def main() -> None:
     hep.style.use("CMS")
 
     fig, ax = plt.subplots(figsize=(14, 6))
-    fig.subplots_adjust(left=0.12, right=0.96, bottom=0.13, top=0.64)
+    fig.subplots_adjust(left=0.12, right=0.96, bottom=0.13, top=0.85)
     ax.stairs(counts.sum(axis=0), edges)
     ax.set(xlabel=axis_label, ylabel="Bin count")
     if short_me.endswith("_pt"):
         ax.set_yscale("log")
-    header(fig, era, title)
+    header(fig, era)
     fig.savefig(out / "histogram.png", dpi=160)
     plt.close(fig)
 
     grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
     grid[ls - ls.min()] = counts
     fig, ax = plt.subplots(figsize=(15, 8))
-    fig.subplots_adjust(left=0.10, right=0.86, bottom=0.13, top=0.65)
+    fig.subplots_adjust(left=0.10, right=0.86, bottom=0.13, top=0.85)
     image = ax.imshow(
         grid.T,
         origin="lower",
@@ -69,12 +65,12 @@ def main() -> None:
     )
     fig.colorbar(image, ax=ax, label="Bin content")
     ax.set(xlabel="Lumisection", ylabel=axis_label)
-    header(fig, era, title)
+    header(fig, era)
     fig.savefig(out / "contents.png", dpi=160)
     plt.close(fig)
 
     fig, (top, bottom) = plt.subplots(2, 1, figsize=(15, 9), sharex=True)
-    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.10, top=0.65, hspace=0.10)
+    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.10, top=0.85, hspace=0.10)
     totals = counts.sum(axis=1)
     mean_x = np.divide(
         counts @ centers,
@@ -86,19 +82,19 @@ def main() -> None:
     bottom.plot(ls, mean_x, marker=".", linestyle="none")
     top.set(ylabel="Sum of bin contents")
     bottom.set(xlabel="Lumisection", ylabel=f"Mean {axis_label}")
-    header(fig, era, title)
+    header(fig, era)
     fig.savefig(out / "statistics.png", dpi=160)
     plt.close(fig)
 
     nonzero = np.flatnonzero(totals > 0)
     selected = sorted({int(nonzero[0]), int(nonzero[len(nonzero) // 2]), int(nonzero[-1])}) if len(nonzero) else [0]
     fig, ax = plt.subplots(figsize=(15, 8))
-    fig.subplots_adjust(left=0.13, right=0.96, bottom=0.13, top=0.65)
+    fig.subplots_adjust(left=0.13, right=0.96, bottom=0.13, top=0.85)
     for index in selected:
         ax.stairs(counts[index], edges, label=f"LS {ls[index]}")
     ax.set(xlabel=axis_label, ylabel="Bin content")
     ax.legend(frameon=False)
-    header(fig, era, title)
+    header(fig, era)
     fig.savefig(out / "examples.png", dpi=160)
     plt.close(fig)
     print("Saved four figures in", out)

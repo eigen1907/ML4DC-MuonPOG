@@ -3,6 +3,7 @@
 import json
 import pickle
 from pathlib import Path
+from shutil import rmtree
 
 import matplotlib.pyplot as plt
 import mplhep as hep
@@ -26,7 +27,8 @@ VALIDATION_LS = 5_000
 EPOCHS = 20
 THRESHOLD_QUANTILE = 0.95
 ENTRY_EDGES = (0, 100, 1_000, 5_000)
-CASES = {"good": 397780, "bad_well_known": 397765, "bad_ambiguous": 395713}
+# Test runs with the highest median GlbMuon_Glb_eta entries per LS in each group.
+CASES = {"good": 397332, "bad_well_known": 396153, "bad_ambiguous": 395723}
 LABELS = {"good": "Good", "bad_well_known": "Bad (well known)",
           "bad_ambiguous": "Bad (ambiguous)"}
 
@@ -58,29 +60,25 @@ def load_bins(rows: pd.DataFrame, me_files: list[str], axes: dict) -> np.ndarray
 
 
 def plot_me(ls: np.ndarray, original: np.ndarray, predicted: np.ndarray,
-            axis: tuple, label: str, era: str, run: int, me: str, output: Path) -> None:
+            axis: tuple, era: str, output: Path) -> None:
     _, low, high = axis
     difference = original - predicted
     count_norm = LogNorm(vmin=0.1, vmax=max(1, float(original.max()), float(predicted.max())))
     delta = max(1, float(np.abs(difference).max()))
     diff_norm = SymLogNorm(linthresh=1, vmin=-delta, vmax=delta)
-    short_me = me.rsplit("__", 1)[-1]
-    if short_me in {"GlbMuon_Glb_eta", "GlbMuon_Glb_pt"}:
-        short_me = f"{me.removeprefix('Muons__').split('__')[0]} / {short_me}"
     extent = (ls.min() - 0.5, ls.max() + 0.5, low, high)
     output.mkdir(parents=True, exist_ok=True)
     for old in output.glob("*.png"):
         old.unlink()
-    for name, values, title, norm, cmap in (
-        ("original", original, "Original", count_norm, "viridis"),
-        ("prediction", predicted, "AE prediction", count_norm, "viridis"),
-        ("residual", difference, "Original - prediction", diff_norm, "coolwarm"),
+    for name, values, norm, cmap in (
+        ("original", original, count_norm, "viridis"),
+        ("prediction", predicted, count_norm, "viridis"),
+        ("residual", difference, diff_norm, "coolwarm"),
     ):
         fig, ax = plt.subplots(figsize=(12, 6))
-        fig.subplots_adjust(left=0.12, right=0.86, bottom=0.13, top=0.73)
+        fig.subplots_adjust(left=0.12, right=0.86, bottom=0.13, top=0.85)
         fig.text(0.12, 0.98, r"$\bf{CMS}$ Work in Progress", va="top")
         fig.text(0.86, 0.98, era, ha="right", va="top")
-        fig.suptitle(f"{label} | Run {run} | {short_me} | {title}", y=0.87)
         image = ax.imshow(values.T, origin="lower", aspect="auto", extent=extent,
                           interpolation="nearest", norm=norm, cmap=cmap)
         ax.set(xlabel="LS", ylabel="ME x axis")
@@ -163,6 +161,7 @@ def main() -> None:
     plot_dir.mkdir(parents=True, exist_ok=True)
     for old in plot_dir.glob("*.png"):
         old.unlink()
+    rmtree(plot_dir / "reconstructions", ignore_errors=True)
     for era, group in scores.groupby("era"):
         plot_scores(group, threshold, era, plot_dir / f"{era}.png")
     plot_scores(scores, threshold, "2025 all", plot_dir / "all.png")
@@ -184,8 +183,7 @@ def main() -> None:
         for name in me_files:
             bins = axes[name][0]
             plot_me(rows.ls_number.to_numpy(), original[:, offset:offset + bins],
-                    predicted[:, offset:offset + bins], axes[name], LABELS[label],
-                    rows.era.iloc[0], run, name.removesuffix(".parquet"),
+                    predicted[:, offset:offset + bins], axes[name], rows.era.iloc[0],
                     out / name.removeprefix("Muons__").removesuffix(".parquet"))
             offset += bins
         cases[label] = {"run": run, "era": rows.era.iloc[0], "ls": len(rows),
