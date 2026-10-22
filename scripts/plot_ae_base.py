@@ -7,7 +7,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import mplhep as hep
 import numpy as np
-from matplotlib.ticker import MaxNLocator
 
 from ae_base import load_run, shrink_hlt_shapes
 
@@ -68,8 +67,9 @@ def main() -> None:
             diff_ax.scatter(ls, diff, s=8, color="#7b3294", alpha=0.75, linewidths=0,
                             rasterized=True)
             diff_ax.axhline(0, color="black", linestyle="--", linewidth=1)
-            diff_ax.set(xlabel="Lumisection", ylabel="Diff")
-            diff_ax.yaxis.set_major_locator(MaxNLocator(nbins=3))
+            limit = 1.25 if kind == "stat" else 0.4
+            diff_ax.set(xlabel="Lumisection", ylabel="Diff", ylim=(-limit, limit),
+                        yticks=(-limit, 0, limit))
             fig.savefig(out, dpi=160, bbox_inches="tight")
             plt.close(fig)
     print(f"Saved ae_base feature plots for run {run}")
