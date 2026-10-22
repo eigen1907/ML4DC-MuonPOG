@@ -67,7 +67,7 @@ def main() -> None:
     fig.savefig(out / "me.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
 
-    # Match ae_base's shape_mean and log_entries inputs for this ME.
+    # Show raw shape; ae_base shrinks sparse OneHLT shape before training.
     edges = np.linspace(x_min, x_max, counts.shape[1] + 1, dtype=np.float32)
     centers = (edges[:-1] + edges[1:]) / 2
     positions = (np.abs(centers) / max(abs(x_min), abs(x_max))

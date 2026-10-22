@@ -10,7 +10,7 @@ fi
 index=output/plots/mes/plots.md
 rm -rf output/plots/mes
 mkdir -p "$(dirname "$index")"
-printf '# Muons ME plots\n\nEach ME has raw LS-by-bin contents (`me.png`), raw weighted mean bin position (`shape.png`), and Good-train-standardized `log1p(entries)` (`stat.png`). The four `good_but_anomaly` runs are high-stat examples within the user-marked test regions.\n\n' > "$index"
+printf '# Muons ME plots\n\nEach ME has raw LS-by-bin contents (`me.png`), raw weighted mean bin position before OneHLT shrinkage (`shape.png`), and Good-train-standardized `log1p(entries)` (`stat.png`). The four `good_but_anomaly` runs sample the user-marked high-score regions; selection used offline eta statistics, while OneHLT entries can be sparse.\n\n' > "$index"
 
 for folder in \
   output/dataset/raw/Muon0__Run2025F-PromptReco-v1__DQMIO/397332 \

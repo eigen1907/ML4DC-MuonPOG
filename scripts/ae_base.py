@@ -23,6 +23,7 @@ SEED = 42
 THRESHOLD_QUANTILE = 0.95
 EPOCHS = 80
 ETA_ME = "Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta.parquet"
+HLT_SHAPE_PRIOR_COUNT = 10
 
 
 def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
@@ -60,9 +61,19 @@ def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
         stem = name.removesuffix(".parquet")
         result[f"{stem}__log_entries"] = np.log1p(entries)
         result[f"{stem}__shape_mean"] = shape_mean
+        if name.startswith("Muons__MuonRecoOneHLT__"):
+            result[f"{stem}__bin_count"] = total
         if name == ETA_ME:
             result["eta_entries"] = entries
     return result
+
+
+def shrink_hlt_shapes(data: pd.DataFrame, priors: dict[str, float], prior_count: int) -> None:
+    """Apply the saved Good-train shape priors before scaling or scoring."""
+    for feature, prior in priors.items():
+        count = data[feature.replace("__shape_mean", "__bin_count")].to_numpy(dtype=np.float64)
+        shape = data[feature].to_numpy(dtype=np.float64)
+        data[feature] = (count * shape + prior_count * prior) / (count + prior_count)
 
 
 def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path) -> None:
@@ -173,8 +184,21 @@ def main() -> None:
         if index % 100 == 0:
             print(f"Loaded {index}/{len(manifest)} runs", flush=True)
     data = pd.concat(frames, ignore_index=True)
+    train_mask = data.split == "train"
     features = [f"{name.removesuffix('.parquet')}__{kind}" for name in me_files for kind in ("log_entries", "shape_mean")]
-    scaler = StandardScaler().fit(data.loc[data.split == "train", features].to_numpy(dtype=np.float32))
+    # Preserve the raw Good-train scale so shrinkage is not undone by refitting it.
+    scaler = StandardScaler().fit(data.loc[train_mask, features].to_numpy(dtype=np.float32))
+    shape_priors = {}
+    for name in me_files:
+        if not name.startswith("Muons__MuonRecoOneHLT__"):
+            continue
+        stem = name.removesuffix(".parquet")
+        feature, count_name = f"{stem}__shape_mean", f"{stem}__bin_count"
+        count = data[count_name].to_numpy(dtype=np.float64)
+        shape = data[feature].to_numpy(dtype=np.float64)
+        prior = np.average(shape[train_mask], weights=count[train_mask])
+        shape_priors[feature] = float(prior)
+    shrink_hlt_shapes(data, shape_priors, HLT_SHAPE_PRIOR_COUNT)
     x_train = scaler.transform(data.loc[data.split == "train", features].to_numpy(dtype=np.float32))
     x_val = scaler.transform(data.loc[data.split == "validation", features].to_numpy(dtype=np.float32))
     model = MLPRegressor(hidden_layer_sizes=(8, 3, 8), batch_size=1024, random_state=SEED,
@@ -198,6 +222,7 @@ def main() -> None:
     with (MODEL / "model.pkl").open("wb") as output:
         pickle.dump({"model": model, "scaler": scaler, "threshold": threshold,
                      "features": features, "seed": SEED,
+                     "hlt_shape_prior_count": HLT_SHAPE_PRIOR_COUNT, "hlt_shape_priors": shape_priors,
                      "train_losses": train_losses, "validation_losses": val_losses,
                      "run_split": {key: sorted(value & set(manifest.run_number)) for key, value in split.items()}}, output)
     groups = {"train_good": scores.split == "train", "validation_good": scores.split == "validation",
@@ -211,6 +236,8 @@ def main() -> None:
         "cache_snapshot_promptreco_runs": len(manifest), "catalog_promptreco_runs": expected_runs,
         "runs_with_ls_completeness_below_one": int((manifest.ls_completeness < 1).sum()),
         "feature_count": len(features), "training_epochs": EPOCHS,
+        "hlt_shape_prior_count": HLT_SHAPE_PRIOR_COUNT,
+        "hlt_shape_priors_good_train": shape_priors,
         "training_reconstruction_mse": train_losses[-1],
         "validation_reconstruction_mse": val_losses[-1],
         "threshold": threshold,
