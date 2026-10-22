@@ -26,7 +26,9 @@ def main() -> None:
     short_me = str(frame.iloc[0].me).rsplit("/", 1)[-1]
     era = str(frame.iloc[0].dataset).split("/")[2].split("-")[0].removeprefix("Run")
     label = pd.read_csv("data/run_labels.csv").set_index("run_number").label.get(run)
-    status = {"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}.get(label, "Unlabeled")
+    status = {"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}.get(label)
+    if status is None:
+        raise SystemExit(f"No Good/Bad label for run {run}")
     axis_label = "ME x axis"
     if short_me.endswith("_eta"):
         axis_label = "Muon $\\eta$"
@@ -34,7 +36,7 @@ def main() -> None:
         axis_label = "Muon $p_T$"
     elif short_me.endswith("_phi"):
         axis_label = "Muon $\\phi$"
-    out = Path("output/plots/mes") / args.input.relative_to("output/dataset/raw").with_suffix(".png")
+    out = Path("output/plots/mes") / status.lower() / str(run) / f"{args.input.stem}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
 

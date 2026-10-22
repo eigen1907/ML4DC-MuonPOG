@@ -16,12 +16,11 @@ for folder in \
   output/dataset/raw/Muon0__Run2025G-PromptReco-v1__DQMIO/398139; do
   run=${folder##*/}
   case "$run" in
-    397332) label=Good ;;
-    396153) label=Bad ;;
-    395723) label=Bad ;;
-    398902|396735|398139) label='Good test, high ae_bin score' ;;
+    397332) label=Good; group=good ;;
+    396153|395723) label=Bad; group=bad ;;
+    398902|396735|398139) label='Good test, high ae_bin score'; group=good ;;
   esac
-  relative=${folder#output/dataset/raw/}
+  relative=$group/$run
   printf '## %s — Run %s\n\n| ME | LS map |\n|---|---|\n' "$label" "$run" >> "$index"
   for file in "$folder"/Muons__*.parquet; do
     uv run --locked python scripts/plot.py --input "$file"
