@@ -21,7 +21,16 @@ The first DIALS query requests CERN authentication when needed. Run collection b
 
 The collector writes the DIALS run list to `output/dataset/runs.csv` and one Parquet per dataset/run/ME to `output/dataset/raw/`. The experiment selects PromptReco runs and checks them against the tracked labels. Good runs are split by run within each era: about 70% train, 15% validation, and 15% test. Both Bad groups join the test set. Only Good training LS fit the models.
 
-`ae_base` uses two summaries from each ME (`log1p(entries)` and mean histogram position), giving 20 inputs to a 20→8→3→8→20 autoencoder. For the two sparse OneHLT MEs, it pulls the shape mean toward the Good-train pooled mean using 10 in-range-bin pseudo-counts; `log1p(entries)` remains unchanged. The scaler fits raw Good-train features before this adjustment so that standardization does not undo it. Its threshold is the 95th percentile of Good validation LS scores.
+`ae_base` uses two summaries from each ME (`log1p(entries)` and mean histogram position), giving 20 inputs to a 20→16→8→16→20 autoencoder. For the two sparse OneHLT MEs, it pulls the shape mean toward the Good-train pooled mean using 10 in-range-bin pseudo-counts; `log1p(entries)` remains unchanged. The scaler fits raw Good-train features before this adjustment so that standardization does not undo it. Its threshold is the 95th percentile of Good validation LS scores.
+
+The earlier 20→8→3→8→20 model is archived under `output/{model,predict,plots}/ae_base_small/`. The architecture comparison kept the data, run split, scaler, OneHLT priors, seed (42), and 80 training epochs fixed. Each model uses its own Good-validation threshold.
+
+| Architecture | Train MSE | Validation MSE | Threshold | Good test LS flagged | Known Bad LS flagged | Ambiguous Bad LS flagged |
+|---|---:|---:|---:|---:|---:|---:|
+| 20→8→3→8→20 | 0.02775 | 0.01637 | 0.03120 | 8.25% | 96.65% | 99.54% |
+| 20→16→8→16→20 | 0.003452 | 0.002532 | 0.003068 | 11.26% | 99.80% | 99.07% |
+
+The wider model reconstructs better but flags more Good test LS, so this is not a universal performance improvement. Labels are at run level; the flagged percentages are LS fractions, not classification rates. Full numbers are in `output/predict/ae_base/architecture_comparison.json`, with a loss plot at `output/plots/ae_base/architecture_loss.png`.
 
 `ae_bin` takes all 1,080 stored bins from the same 10 MEs. It uses `ae_base` scores for the shared run split, fits on 20,000 sampled Good training LS, and checks 5,000 Good validation LS. Its score balances the MEs and adjusts for five `eta_entries` ranges using all Good validation LS; the final threshold is **1 for every LS**. It also plots original, predicted, and residual bin contents for one representative run from each test group.
 

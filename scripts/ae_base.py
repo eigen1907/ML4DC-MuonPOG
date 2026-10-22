@@ -22,6 +22,7 @@ PLOTS = Path("output/plots/ae_base")
 SEED = 42
 THRESHOLD_QUANTILE = 0.95
 EPOCHS = 80
+HIDDEN_LAYERS = (16, 8, 16)
 ETA_ME = "Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta.parquet"
 HLT_SHAPE_PRIOR_COUNT = 10
 
@@ -201,7 +202,7 @@ def main() -> None:
     shrink_hlt_shapes(data, shape_priors, HLT_SHAPE_PRIOR_COUNT)
     x_train = scaler.transform(data.loc[data.split == "train", features].to_numpy(dtype=np.float32))
     x_val = scaler.transform(data.loc[data.split == "validation", features].to_numpy(dtype=np.float32))
-    model = MLPRegressor(hidden_layer_sizes=(8, 3, 8), batch_size=1024, random_state=SEED,
+    model = MLPRegressor(hidden_layer_sizes=HIDDEN_LAYERS, batch_size=1024, random_state=SEED,
                          tol=0, n_iter_no_change=EPOCHS + 1)
     train_losses, val_losses = [], []
     for epoch in range(1, EPOCHS + 1):
@@ -222,6 +223,7 @@ def main() -> None:
     with (MODEL / "model.pkl").open("wb") as output:
         pickle.dump({"model": model, "scaler": scaler, "threshold": threshold,
                      "features": features, "seed": SEED,
+                     "hidden_layer_sizes": HIDDEN_LAYERS,
                      "hlt_shape_prior_count": HLT_SHAPE_PRIOR_COUNT, "hlt_shape_priors": shape_priors,
                      "train_losses": train_losses, "validation_losses": val_losses,
                      "run_split": {key: sorted(value & set(manifest.run_number)) for key, value in split.items()}}, output)
@@ -236,6 +238,7 @@ def main() -> None:
         "cache_snapshot_promptreco_runs": len(manifest), "catalog_promptreco_runs": expected_runs,
         "runs_with_ls_completeness_below_one": int((manifest.ls_completeness < 1).sum()),
         "feature_count": len(features), "training_epochs": EPOCHS,
+        "hidden_layer_sizes": list(HIDDEN_LAYERS),
         "hlt_shape_prior_count": HLT_SHAPE_PRIOR_COUNT,
         "hlt_shape_priors_good_train": shape_priors,
         "training_reconstruction_mse": train_losses[-1],
