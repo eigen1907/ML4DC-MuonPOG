@@ -14,8 +14,8 @@ for folder in \
   run=${folder##*/}
   case "$run" in
     397332) label=Good ;;
-    396153) label='Bad (well known)' ;;
-    395723) label='Bad (ambiguous)' ;;
+    396153) label=Bad ;;
+    395723) label=Bad ;;
   esac
   relative=${folder#output/dataset/raw/}
   printf '## %s — Run %s\n\n| ME | LS map |\n|---|---|\n' "$label" "$run" >> "$index"

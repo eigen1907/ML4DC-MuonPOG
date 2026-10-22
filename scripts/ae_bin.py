@@ -29,8 +29,7 @@ THRESHOLD_QUANTILE = 0.95
 ENTRY_EDGES = (0, 100, 1_000, 5_000)
 # Test runs with the highest median GlbMuon_Glb_eta entries per LS in each group.
 CASES = {"good": 397332, "bad_well_known": 396153, "bad_ambiguous": 395723}
-LABELS = {"good": "Good", "bad_well_known": "Bad (well known)",
-          "bad_ambiguous": "Bad (ambiguous)"}
+LABELS = {"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}
 
 
 def load_bins(rows: pd.DataFrame, me_files: list[str], axes: dict) -> np.ndarray:
@@ -60,7 +59,7 @@ def load_bins(rows: pd.DataFrame, me_files: list[str], axes: dict) -> np.ndarray
 
 
 def plot_me(ls: np.ndarray, original: np.ndarray, predicted: np.ndarray,
-            axis: tuple, era: str, output: Path) -> None:
+            axis: tuple, rlabel: str, output: Path) -> None:
     _, low, high = axis
     difference = original - predicted
     count_norm = LogNorm(vmin=0.1, vmax=max(1, float(original.max()), float(predicted.max())))
@@ -80,7 +79,7 @@ def plot_me(ls: np.ndarray, original: np.ndarray, predicted: np.ndarray,
                           interpolation="nearest", norm=norm, cmap=cmap)
         ax.set(xlabel="LS", ylabel="ME x axis")
         fig.colorbar(image, ax=ax, label="Bin count" if name != "residual" else "Count difference")
-        hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
+        hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=rlabel)
         fig.savefig(output / f"{name}.png", dpi=160, bbox_inches="tight")
         plt.close(fig)
 
@@ -181,7 +180,8 @@ def main() -> None:
         for name in me_files:
             bins = axes[name][0]
             plot_me(rows.ls_number.to_numpy(), original[:, offset:offset + bins],
-                    predicted[:, offset:offset + bins], axes[name], rows.era.iloc[0],
+                    predicted[:, offset:offset + bins], axes[name],
+                    f"Run {run} ({LABELS[label]}), {rows.era.iloc[0]}",
                     out / name.removeprefix("Muons__").removesuffix(".parquet"))
             offset += bins
         cases[label] = {"run": run, "era": rows.era.iloc[0], "ls": len(rows),

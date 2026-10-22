@@ -22,8 +22,11 @@ def main() -> None:
     x_min, x_max = float(frame.iloc[0].x_min), float(frame.iloc[0].x_max)
     if (frame.x_min != x_min).any() or (frame.x_max != x_max).any():
         raise SystemExit("Histogram ranges vary across LS; inspect before plotting")
+    run = int(frame.iloc[0].run_number)
     short_me = str(frame.iloc[0].me).rsplit("/", 1)[-1]
     era = str(frame.iloc[0].dataset).split("/")[2].split("-")[0].removeprefix("Run")
+    label = pd.read_csv("data/run_labels.csv").set_index("run_number").label.get(run)
+    status = {"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}.get(label, "Unlabeled")
     axis_label = "ME x axis"
     if short_me.endswith("_eta"):
         axis_label = "Muon $\\eta$"
@@ -47,7 +50,8 @@ def main() -> None:
     )
     fig.colorbar(image, ax=ax, label="Bin content")
     ax.set(xlabel="Lumisection", ylabel=axis_label)
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
+                  rlabel=f"Run {run} ({status}), {era}")
     fig.savefig(out, dpi=160, bbox_inches="tight")
     plt.close(fig)
     print("Saved", out)

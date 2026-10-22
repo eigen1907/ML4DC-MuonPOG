@@ -66,7 +66,7 @@ def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
 
 
 def plot_scores(frame: pd.DataFrame, threshold: float, era: str, output: Path) -> None:
-    backgrounds = {"good": "#cde8d1", "bad_well_known": "#f3bcbc", "bad_ambiguous": "#ffe599"}
+    backgrounds = {"good": "#cde8d1", "bad_well_known": "#f3bcbc", "bad_ambiguous": "#f3bcbc"}
     fig, ax = plt.subplots(figsize=(16, 6), layout="constrained")
     frame = frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
     runs, midpoints = [], []
@@ -86,11 +86,10 @@ def plot_scores(frame: pd.DataFrame, threshold: float, era: str, output: Path) -
     ax.set_xticks([midpoints[i] for i in sorted(ticks)], [str(runs[i]) for i in sorted(ticks)])
     ax.legend(handles=[
         Patch(facecolor=backgrounds["good"], edgecolor="#5a9e68", label="Good"),
-        Patch(facecolor=backgrounds["bad_well_known"], edgecolor="#be6868", label="Bad (well known)"),
-        Patch(facecolor=backgrounds["bad_ambiguous"], edgecolor="#b89332", label="Bad (ambiguous)"),
+        Patch(facecolor=backgrounds["bad_well_known"], edgecolor="#be6868", label="Bad"),
         Line2D([], [], color="black", linestyle="--", label="Threshold"),
         Line2D([], [], marker="o", linestyle="none", color="#1769c2", label="LS"),
-    ], ncol=3, frameon=True, facecolor="white", framealpha=0.95)
+    ], ncol=4, frameon=True, facecolor="white", framealpha=0.95)
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
@@ -108,13 +107,12 @@ def plot_diagnostics(scores: pd.DataFrame, train_losses: list[float], val_losses
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 6), layout="constrained")
-    groups = [("good", "Good", "#27834b"),
-              ("bad_well_known", "Bad (well known)", "#c43c3c"),
-              ("bad_ambiguous", "Bad (ambiguous)", "#ae7900")]
     selected = scores[scores.split == "test"]
     bins = np.geomspace(selected.anomaly_score.min(), selected.anomaly_score.max(), 60)
-    for name, label, color in groups:
-        values = selected.loc[selected.label == name, "anomaly_score"]
+    groups = [("Good", selected.label == "good", "#27834b"),
+              ("Bad", selected.label != "good", "#c43c3c")]
+    for label, mask, color in groups:
+        values = selected.loc[mask, "anomaly_score"]
         ax.hist(values, bins=bins, weights=np.full(len(values), 1 / len(values)),
                 histtype="step", linewidth=2, color=color, label=f"{label} ({len(values):,} LS)")
     ax.axvline(threshold, color="black", linestyle="--", label="Threshold")
