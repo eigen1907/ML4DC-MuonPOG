@@ -77,7 +77,8 @@ def shrink_hlt_shapes(data: pd.DataFrame, priors: dict[str, float], prior_count:
         data[feature] = (count * shape + prior_count * prior) / (count + prior_count)
 
 
-def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path) -> None:
+def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path,
+                marked_runs: tuple[int, ...] = ()) -> None:
     backgrounds = {"good": "#cde8d1", "bad_well_known": "#f3bcbc", "bad_ambiguous": "#f3bcbc"}
     fig, ax = plt.subplots(figsize=(14.5, 6), layout="constrained")
     frame = frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
@@ -85,6 +86,14 @@ def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path
     for run, group in frame.groupby("run_number", sort=False):
         first, last = int(group.index[0]), int(group.index[-1])
         ax.axvspan(first - 0.5, last + 0.5, color=backgrounds[group.label.iloc[0]], zorder=0)
+        if run in marked_runs:
+            ax.axvspan(first - 0.5, last + 0.5, fill=False, edgecolor="#b2182b",
+                       linewidth=1.5, linestyle="--", zorder=4)
+            midpoint = (first + last) / 2
+            align = "left" if midpoint < 0.1 * len(frame) else "right" if midpoint > 0.9 * len(frame) else "center"
+            ax.text(midpoint, 0.65, str(run), transform=ax.get_xaxis_transform(),
+                    ha=align, color="#b2182b", zorder=6,
+                    bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9})
         runs.append(run)
         midpoints.append((first + last) / 2)
     ax.scatter(np.arange(len(frame)), frame.anomaly_score, s=9, alpha=0.5,
@@ -260,7 +269,8 @@ def main() -> None:
     for split, name, label in (("train", "train", "Train"),
                                ("validation", "val", "Validation"),
                                ("test", "test", "Test")):
-        plot_scores(scores[scores.split == split], threshold, label, plot_dir / f"{name}.png")
+        plot_scores(scores[scores.split == split], threshold, label, plot_dir / f"{name}.png",
+                    marked_runs=(392251, 393240, 396763, 398902) if split == "test" else ())
     plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
     print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 6} plots in output/")
