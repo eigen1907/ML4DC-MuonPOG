@@ -6,11 +6,11 @@ A small per-lumisection anomaly study using the 10 one-dimensional `Muons/` moni
 
 ```bash
 uv sync
-bash runs/01_example.sh      # fetch one ME/run and plot its LS map
+bash runs/01_example.sh      # fetch one ME/run and plot raw, shape, stat
 bash runs/02_all_2025.sh     # collect 2025 Muon0 data; resumable, but lengthy
 bash runs/03_ae_base.sh      # train ae_base and plot LS scores
 bash runs/04_ae_bin.sh       # train ae_bin and plot scores plus ME reconstructions
-bash runs/05_me_plots.sh     # plot LS maps for 10 MEs in seven test runs
+bash runs/05_me_plots.sh     # plot raw, shape, stat for 10 MEs in seven test runs
 ```
 
 The first DIALS query requests CERN authentication when needed. Run collection before the experiment on a fresh clone. The collector keeps all 2025 Muon0 processing versions except non-PromptReco 2025G tests; the experiment selects PromptReco only.
@@ -27,7 +27,7 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
 
-`05_me_plots.sh` draws LS-by-bin heatmaps for all 10 MEs in seven test runs. The representative runs remain Good 397332 and Bad 396153/395723. Four additional Good test runs—392251, 393240, 396763, and 398902—are high-stat examples inside the four regions marked on the test plot. Their median `GlbMuon_Glb_eta` entries/LS are 7,568, 6,136, 3,160, and 3,329, respectively. The tallest plumes in the first and third regions come from low-stat runs, so the selected runs represent nearby high-stat cases. The recipe refreshes `output/plots/mes/`, saving each `<ME>.png` under `good/<run>/`, `bad/<run>/`, or `good_but_anomaly/<run>/`; its `plots.md` links the figures. Plots display the Bad subtypes together and put `Run number (Good/Bad), era` above each single-run ME view.
+`05_me_plots.sh` plots all 10 MEs in seven test runs. The representative runs are Good 397332 and Bad 396153/395723; Good test runs 392251, 393240, 396763, and 398902 sample the four marked high-score regions with higher statistics. Each `<ME>/` folder under `output/plots/mes/{good,bad,good_but_anomaly}/<run>/` contains `me.png` (raw LS-by-bin contents), `shape.png` (the `ae_base` shape mean), and `stat.png` (`log1p(entries)`). The `plots.md` gallery links all three.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
 
@@ -41,7 +41,7 @@ Run labels are provisional and apply to entire runs. Flagged-LS fractions are th
 | `output/dataset/` | Generated run list and cached per-LS ME Parquet files. |
 | `output/model/{ae_base,ae_bin}/` | Fitted `model.pkl` files. |
 | `output/predict/{ae_base,ae_bin}/` | LS `scores.parquet` and `metrics.json`. |
-| `output/plots/mes/` | Model-independent LS-by-bin ME heatmaps. |
+| `output/plots/mes/` | Raw ME heatmaps and the two `ae_base` input curves. |
 | `output/plots/{ae_base,ae_bin}/` | Score plots; `ae_bin` also has reconstruction figures and `plots.md`. |
 
 Everything under `output/` is generated and ignored by Git; `.gitkeep` preserves its four top-level directories.

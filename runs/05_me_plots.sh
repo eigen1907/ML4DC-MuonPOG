@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 index=output/plots/mes/plots.md
 rm -rf output/plots/mes
 mkdir -p "$(dirname "$index")"
-printf '# Raw Muons ME plots\n\nThe four `good_but_anomaly` runs are high-stat examples within the four user-marked regions of the test plot. Median `GlbMuon_Glb_eta` entries/LS: 392251 (7,568), 393240 (6,136), 396763 (3,160), 398902 (3,329). The tallest plumes in the first and third regions come from low-stat runs; these are nearby high-stat cases.\n\n' > "$index"
+printf '# Muons ME plots\n\nEach ME has raw LS-by-bin contents (`me.png`) and the two `ae_base` inputs: weighted mean bin position (`shape.png`) and `log1p(entries)` (`stat.png`). The four `good_but_anomaly` runs are high-stat examples within the user-marked test regions.\n\n' > "$index"
 
 for folder in \
   output/dataset/raw/Muon0__Run2025F-PromptReco-v1__DQMIO/397332 \
@@ -23,7 +23,7 @@ for folder in \
     *) echo "Unexpected run: $run" >&2; exit 1 ;;
   esac
   relative=$group/$run
-  printf '## %s — Run %s\n\n| ME | LS map |\n|---|---|\n' "$label" "$run" >> "$index"
+  printf '## %s — Run %s\n\n| ME | Raw | Shape | Stat |\n|---|---|---|---|\n' "$label" "$run" >> "$index"
   for file in "$folder"/Muons__*.parquet; do
     if [ "$group" = good_but_anomaly ]; then
       uv run --locked python scripts/plot.py --input "$file" --good-but-anomaly
@@ -32,7 +32,7 @@ for folder in \
     fi
     me=${file##*/}
     me=${me%.parquet}
-    printf '| %s | [Contents](%s/%s.png) |\n' "$me" "$relative" "$me" >> "$index"
+    printf '| %s | [ME](%s/%s/me.png) | [Shape](%s/%s/shape.png) | [Stat](%s/%s/stat.png) |\n' "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
   done
   printf '\n' >> "$index"
 done
