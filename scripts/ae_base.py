@@ -91,8 +91,8 @@ def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path
                        linewidth=1.5, linestyle="--", zorder=4)
             midpoint = (first + last) / 2
             align = "left" if midpoint < 0.1 * len(frame) else "right" if midpoint > 0.9 * len(frame) else "center"
-            ax.text(midpoint, 0.65, str(run), transform=ax.get_xaxis_transform(),
-                    ha=align, color="#b2182b", zorder=6,
+            ax.text(midpoint, 0.03, str(run), transform=ax.get_xaxis_transform(),
+                    ha=align, va="bottom", color="#b2182b", zorder=6,
                     bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9})
         runs.append(run)
         midpoints.append((first + last) / 2)
@@ -270,7 +270,7 @@ def main() -> None:
                                ("validation", "val", "Validation"),
                                ("test", "test", "Test")):
         plot_scores(scores[scores.split == split], threshold, label, plot_dir / f"{name}.png",
-                    marked_runs=(392251, 393240, 396763, 398902) if split == "test" else ())
+                    marked_runs=(391670, 393240, 396727, 398902) if split == "test" else ())
     plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
     print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 6} plots in output/")
