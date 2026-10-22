@@ -3,14 +3,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ ! -f output/model/ae_base/model.pkl ]; then
-  echo "Train ae_base before plotting standardized stat" >&2
+  echo "Train ae_base before plotting its features" >&2
   exit 1
 fi
 
-index=output/plots/mes/plots.md
-rm -rf output/plots/mes
+index=output/plots/ae_base/plots.md
+rm -rf output/plots/mes output/plots/ae_base/input output/plots/ae_base/output output/plots/ae_base/diff
 mkdir -p "$(dirname "$index")"
-printf '# Muons ME plots\n\nEach ME has raw LS-by-bin contents (`me.png`), raw weighted mean bin position before OneHLT shrinkage (`shape.png`), and Good-train-standardized `log1p(entries)` (`stat.png`). The four `good_but_anomaly` runs sample the user-marked high-score regions; selection used offline eta statistics, while OneHLT entries can be sparse.\n\n' > "$index"
+printf '# Muons ME and ae_base feature plots\n\nRaw ME plots show LS-by-bin contents. For each ae_base feature, input is the model input, output is its reconstruction, and diff is input minus output. Shape is the normalized mean bin position (with OneHLT shrinkage); stat is Good-train-standardized `log1p(entries)`.\n\n' > "$index"
 
 for folder in \
   output/dataset/raw/Muon0__Run2025F-PromptReco-v1__DQMIO/397332 \
@@ -28,16 +28,19 @@ for folder in \
     *) echo "Unexpected run: $run" >&2; exit 1 ;;
   esac
   relative=$group/$run
-  printf '## %s — Run %s\n\n| ME | Raw | Shape | Stat |\n|---|---|---|---|\n' "$label" "$run" >> "$index"
+  printf '## %s — Run %s\n\n| ME | Raw | Shape: input / output / diff | Stat: input / output / diff |\n|---|---|---|---|\n' "$label" "$run" >> "$index"
   for file in "$folder"/Muons__*.parquet; do
     if [ "$group" = good_but_anomaly ]; then
-      uv run --locked python scripts/plot.py --input "$file" --good-but-anomaly --standardized-stat
+      uv run --locked python scripts/plot.py --input "$file" --good-but-anomaly
     else
-      uv run --locked python scripts/plot.py --input "$file" --standardized-stat
+      uv run --locked python scripts/plot.py --input "$file"
     fi
     me=${file##*/}
     me=${me%.parquet}
-    printf '| %s | [ME](%s/%s/me.png) | [Shape](%s/%s/shape.png) | [Stat](%s/%s/stat.png) |\n' "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
+    printf '| `%s` | [ME](../mes/%s/%s.png) | [input](input/shape/%s/%s.png) / [output](output/shape/%s/%s.png) / [diff](diff/shape/%s/%s.png) | [input](input/stat/%s/%s.png) / [output](output/stat/%s/%s.png) / [diff](diff/stat/%s/%s.png) |\n' \
+      "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" \
+      "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
   done
+  uv run --locked python scripts/plot_ae_base.py --folder "$folder" --group "$group"
   printf '\n' >> "$index"
 done

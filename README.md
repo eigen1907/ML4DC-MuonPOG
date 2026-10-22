@@ -6,11 +6,11 @@ A small per-lumisection anomaly study using the 10 one-dimensional `Muons/` moni
 
 ```bash
 uv sync
-bash runs/01_example.sh      # fetch one ME/run and plot raw, shape, stat
+bash runs/01_example.sh      # fetch one ME/run and plot its raw histogram
 bash runs/02_all_2025.sh     # collect 2025 Muon0 data; resumable, but lengthy
 bash runs/03_ae_base.sh      # train ae_base and plot LS scores
 bash runs/04_ae_bin.sh       # train ae_bin and plot scores plus ME reconstructions
-bash runs/05_me_plots.sh     # plot raw, shape, standardized stat after ae_base training
+bash runs/05_me_plots.sh     # plot raw MEs and ae_base feature reconstructions
 ```
 
 The first DIALS query requests CERN authentication when needed. Run collection before the experiment on a fresh clone. The collector keeps all 2025 Muon0 processing versions except non-PromptReco 2025G tests; the experiment selects PromptReco only.
@@ -27,7 +27,7 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
 
-`05_me_plots.sh` plots all 10 MEs in seven test runs after `ae_base` training. The representative runs are Good 397332 and Bad 396153/395723; Good test runs 392251, 393240, 396763, and 398902 sample the four marked high-score regions. They were selected using offline eta statistics within those regions, not the much sparser OneHLT statistics. Each `<ME>/` folder under `output/plots/mes/{good,bad,good_but_anomaly}/<run>/` contains `me.png` (raw LS-by-bin contents), `shape.png` (raw shape mean, before OneHLT shrinkage), and `stat.png` (`log1p(entries)` standardized with the Good-training scaler). The `plots.md` gallery links all three. The standalone `01_example.sh` keeps its unstandardized `stat.png` because it runs before training.
+`05_me_plots.sh` plots all 10 MEs in seven test runs after `ae_base` training. The representative runs are Good 397332 and Bad 396153/395723; Good test runs 392251, 393240, 396763, and 398902 sample the four marked high-score regions. They were selected using offline eta statistics within those regions, not the much sparser OneHLT statistics. Raw LS-by-bin heatmaps are saved as `output/plots/mes/<group>/<run>/<ME>.png`. The model feature plots are saved as `output/plots/ae_base/{input,output,diff}/{stat,shape}/<group>/<run>/<ME>.png`, with a gallery at `output/plots/ae_base/plots.md`. Here `output` is the AE reconstruction and `diff` is input minus output. Shape input is normalized mean bin position (including the OneHLT adjustment) on a 0–1 scale; reconstructions may leave that range. Stat is Good-train-standardized `log1p(entries)`.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
 
@@ -41,7 +41,8 @@ Run labels are provisional and apply to entire runs. Flagged-LS fractions are th
 | `output/dataset/` | Generated run list and cached per-LS ME Parquet files. |
 | `output/model/{ae_base,ae_bin}/` | Fitted `model.pkl` files. |
 | `output/predict/{ae_base,ae_bin}/` | LS `scores.parquet` and `metrics.json`. |
-| `output/plots/mes/` | Raw ME heatmaps and the two `ae_base` input curves. |
-| `output/plots/{ae_base,ae_bin}/` | Score plots; `ae_bin` also has reconstruction figures and `plots.md`. |
+| `output/plots/mes/` | Raw per-LS ME heatmaps. |
+| `output/plots/ae_base/` | LS score plots, feature inputs/reconstructions/differences, and gallery. |
+| `output/plots/ae_bin/` | LS score and bin reconstruction plots. |
 
 Everything under `output/` is generated and ignored by Git; `.gitkeep` preserves its four top-level directories.
