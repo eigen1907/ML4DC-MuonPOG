@@ -1,6 +1,7 @@
-"""Plot raw contents and the two ae_base inputs from one cached 1D ME."""
+"""Plot raw contents and per-LS features from one cached 1D ME."""
 
 import argparse
+import pickle
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Parquet file from fetch.py")
     parser.add_argument("--good-but-anomaly", action="store_true")
+    parser.add_argument("--standardized-stat", action="store_true")
     args = parser.parse_args()
 
     frame = pd.read_parquet(args.input).sort_values("ls_number")
@@ -72,9 +74,23 @@ def main() -> None:
                  if short_me.endswith("_eta") else (centers - x_min) / (x_max - x_min))
     total = counts.sum(axis=1)
     shape = np.divide(counts @ positions, total, out=np.zeros(len(total), dtype=np.float32), where=total > 0)
+    stat = np.log1p(entries)
+    stat_label = "log1p(entries)"
+    if args.standardized_stat:
+        model_path = Path("output/model/ae_base/model.pkl")
+        if not model_path.exists():
+            raise SystemExit("Train ae_base before plotting standardized stat")
+        with model_path.open("rb") as source:
+            saved = pickle.load(source)
+        feature = f"{args.input.stem}__log_entries"
+        if feature not in saved["features"]:
+            raise SystemExit(f"ME is not in the ae_base model: {feature}")
+        index = saved["features"].index(feature)
+        stat = (stat - saved["scaler"].mean_[index]) / saved["scaler"].scale_[index]
+        stat_label = "Standardized log1p(entries)"
     for name, feature, ylabel in (
         ("shape", shape, "Shape mean"),
-        ("stat", np.log1p(entries), "log1p(entries)"),
+        ("stat", stat, stat_label),
     ):
         fig, ax = plt.subplots(figsize=(11, 5), layout="constrained")
         ax.scatter(ls, feature, s=8, alpha=0.65, color="#1769c2", linewidths=0, rasterized=True)

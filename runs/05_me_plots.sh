@@ -2,10 +2,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [ ! -f output/model/ae_base/model.pkl ]; then
+  echo "Train ae_base before plotting standardized stat" >&2
+  exit 1
+fi
+
 index=output/plots/mes/plots.md
 rm -rf output/plots/mes
 mkdir -p "$(dirname "$index")"
-printf '# Muons ME plots\n\nEach ME has raw LS-by-bin contents (`me.png`) and the two `ae_base` inputs: weighted mean bin position (`shape.png`) and `log1p(entries)` (`stat.png`). The four `good_but_anomaly` runs are high-stat examples within the user-marked test regions.\n\n' > "$index"
+printf '# Muons ME plots\n\nEach ME has raw LS-by-bin contents (`me.png`), raw weighted mean bin position (`shape.png`), and Good-train-standardized `log1p(entries)` (`stat.png`). The four `good_but_anomaly` runs are high-stat examples within the user-marked test regions.\n\n' > "$index"
 
 for folder in \
   output/dataset/raw/Muon0__Run2025F-PromptReco-v1__DQMIO/397332 \
@@ -26,9 +31,9 @@ for folder in \
   printf '## %s — Run %s\n\n| ME | Raw | Shape | Stat |\n|---|---|---|---|\n' "$label" "$run" >> "$index"
   for file in "$folder"/Muons__*.parquet; do
     if [ "$group" = good_but_anomaly ]; then
-      uv run --locked python scripts/plot.py --input "$file" --good-but-anomaly
+      uv run --locked python scripts/plot.py --input "$file" --good-but-anomaly --standardized-stat
     else
-      uv run --locked python scripts/plot.py --input "$file"
+      uv run --locked python scripts/plot.py --input "$file" --standardized-stat
     fi
     me=${file##*/}
     me=${me%.parquet}
