@@ -79,6 +79,8 @@ def main() -> None:
         fig, ax = plt.subplots(figsize=(11, 5), layout="constrained")
         ax.scatter(ls, feature, s=8, alpha=0.65, color="#1769c2", linewidths=0, rasterized=True)
         ax.set(xlabel="Lumisection", ylabel=ylabel, xlim=(ls.min() - 0.5, ls.max() + 0.5))
+        if name == "shape":
+            ax.set_ylim(0, 1)
         hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
                       rlabel=f"Run {run} ({status}), {era}")
         fig.savefig(out / f"{name}.png", dpi=160, bbox_inches="tight")
