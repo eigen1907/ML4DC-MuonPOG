@@ -1,4 +1,4 @@
-"""Make CMS-style diagnostic figures from one cached 1D ME."""
+"""Plot LS-by-bin contents from one cached 1D ME."""
 
 import argparse
 from pathlib import Path
@@ -22,7 +22,6 @@ def main() -> None:
     x_min, x_max = float(frame.iloc[0].x_min), float(frame.iloc[0].x_max)
     if (frame.x_min != x_min).any() or (frame.x_max != x_max).any():
         raise SystemExit("Histogram ranges vary across LS; inspect before plotting")
-    edges = np.linspace(x_min, x_max, counts.shape[1] + 1)
     short_me = str(frame.iloc[0].me).rsplit("/", 1)[-1]
     era = str(frame.iloc[0].dataset).split("/")[2].split("-")[0].removeprefix("Run")
     axis_label = "ME x axis"
@@ -34,16 +33,9 @@ def main() -> None:
         axis_label = "Muon $\\phi$"
     out = Path("output/plots/mes") / args.input.relative_to("output/dataset/raw").with_suffix("")
     out.mkdir(parents=True, exist_ok=True)
+    for old in out.glob("*.png"):
+        old.unlink()
     hep.style.use("CMS")
-
-    fig, ax = plt.subplots(figsize=(14, 6), layout="constrained")
-    ax.stairs(counts.sum(axis=0), edges)
-    ax.set(xlabel=axis_label, ylabel="Bin count")
-    if short_me.endswith("_pt"):
-        ax.set_yscale("log")
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
-    fig.savefig(out / "histogram.png", dpi=160, bbox_inches="tight")
-    plt.close(fig)
 
     grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
     grid[ls - ls.min()] = counts
@@ -60,7 +52,7 @@ def main() -> None:
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
     fig.savefig(out / "contents.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
-    print("Saved two figures in", out)
+    print("Saved", out / "contents.png")
 
 
 if __name__ == "__main__":
