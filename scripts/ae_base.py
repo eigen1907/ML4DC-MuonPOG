@@ -67,7 +67,7 @@ def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
 
 def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path) -> None:
     backgrounds = {"good": "#cde8d1", "bad_well_known": "#f3bcbc", "bad_ambiguous": "#f3bcbc"}
-    fig, ax = plt.subplots(figsize=(16, 6), layout="constrained")
+    fig, ax = plt.subplots(figsize=(14.5, 6), layout="constrained")
     frame = frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
     runs, midpoints = [], []
     for run, group in frame.groupby("run_number", sort=False):
@@ -101,7 +101,7 @@ def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path
 
 def plot_diagnostics(scores: pd.DataFrame, train_losses: list[float], val_losses: list[float],
                      threshold: float, plot_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(10, 6), layout="constrained")
+    fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
     ax.plot(range(1, len(train_losses) + 1), train_losses, label="Train")
     ax.plot(range(1, len(val_losses) + 1), val_losses, label="Validation")
     ax.set(xlabel="Epoch", ylabel="Reconstruction MSE")
@@ -110,7 +110,7 @@ def plot_diagnostics(scores: pd.DataFrame, train_losses: list[float], val_losses
     fig.savefig(plot_dir / "loss.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(10, 6), layout="constrained")
+    fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
     selected = scores[scores.split == "test"]
     bins = np.geomspace(selected.anomaly_score.min(), selected.anomaly_score.max(), 60)
     groups = [("Good", selected.label == "good", "#27834b"),

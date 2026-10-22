@@ -40,7 +40,7 @@ def main() -> None:
 
     grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
     grid[ls - ls.min()] = counts
-    fig, ax = plt.subplots(figsize=(15, 8), layout="constrained")
+    fig, ax = plt.subplots(figsize=(13.5, 8), layout="constrained")
     image = ax.imshow(
         grid.T,
         origin="lower",

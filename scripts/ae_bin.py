@@ -74,7 +74,7 @@ def plot_me(ls: np.ndarray, original: np.ndarray, predicted: np.ndarray,
         ("prediction", predicted, count_norm, "viridis"),
         ("residual", difference, diff_norm, "coolwarm"),
     ):
-        fig, ax = plt.subplots(figsize=(12, 6), layout="constrained")
+        fig, ax = plt.subplots(figsize=(11, 6), layout="constrained")
         image = ax.imshow(values.T, origin="lower", aspect="auto", extent=extent,
                           interpolation="nearest", norm=norm, cmap=cmap)
         ax.set(xlabel="LS", ylabel="ME x axis")
