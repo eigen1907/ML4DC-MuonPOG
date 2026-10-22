@@ -25,6 +25,8 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 `ae_bin` takes all 1,080 stored bins from the same 10 MEs. It uses `ae_base` scores for the shared run split, fits on 20,000 sampled Good training LS, and checks 5,000 Good validation LS. Its score balances the MEs and adjusts for five `eta_entries` ranges using all Good validation LS; the final threshold is **1 for every LS**. It also plots original, predicted, and residual bin contents for one representative run from each test group.
 
+Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
+
 `05_me_plots.sh` draws LS-by-bin heatmaps for all 10 MEs in three test runs: Good 397332 and Bad 396153/395723 (one from each tracked Bad subtype). Each has the highest median per-LS `GlbMuon_Glb_eta` entries in its original group. Each run of the recipe refreshes `output/plots/mes/`, saving one `<ME>.png` directly under each dataset/run directory; its `plots.md` links the figures independently of the AE prediction plots. Plots display the Bad subtypes together and put `Run number (Good/Bad), era` above each single-run ME view.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.

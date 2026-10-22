@@ -161,8 +161,11 @@ def main() -> None:
     rmtree(plot_dir / "reconstructions", ignore_errors=True)
     for era, group in scores.groupby("era"):
         plot_scores(group, threshold, era, plot_dir / f"{era}.png")
-    plot_scores(scores, threshold, "2025 all", plot_dir / "all.png")
-    plot_scores(scores[scores.split == "test"], threshold, "2025 test", plot_dir / "test.png")
+    for split, name, label in (("train", "train", "Train"),
+                               ("validation", "val", "Validation"),
+                               ("test", "test", "Test")):
+        plot_scores(scores[scores.split == split], threshold, label, plot_dir / f"{name}.png")
+    plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
 
     cases = {}
@@ -210,8 +213,8 @@ def main() -> None:
         "prediction": "Inverse scaling and expm1; negative predicted counts clipped to zero for display",
         "cases": cases,
     }, indent=2) + "\n")
-    lines = ["# Bin-AE plots", "", "[All LS scores](all.png) · [Test LS scores](test.png) · "
-             "[Distributions](distributions.png) · [Loss](loss.png)", "",
+    lines = ["# Bin-AE plots", "", "[Train](train.png) · [Validation](val.png) · "
+             "[Test](test.png) · [2025](2025.png) · [Distributions](distributions.png) · [Loss](loss.png)", "",
              "Era plots: " + " · ".join(f"[{era}]({era}.png)" for era in sorted(scores.era.unique())), "",
              "Each ME view uses LS on the horizontal axis and histogram position on the vertical axis.", ""]
     for label, run in CASES.items():
@@ -225,7 +228,7 @@ def main() -> None:
             lines.append(f"| {stem.replace('__', ' / ')} | {' | '.join(links)} |")
         lines.append("")
     (PLOTS / "plots.md").write_text("\n".join(lines) + "\n")
-    print(f"Saved {len(scores):,} bin-AE LS scores and 10 summary plots in output/")
+    print(f"Saved {len(scores):,} bin-AE LS scores and {scores.era.nunique() + 6} summary plots in output/")
 
 
 if __name__ == "__main__":

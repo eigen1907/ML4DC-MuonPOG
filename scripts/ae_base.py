@@ -65,7 +65,7 @@ def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
     return result
 
 
-def plot_scores(frame: pd.DataFrame, threshold: float, era: str, output: Path) -> None:
+def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path) -> None:
     backgrounds = {"good": "#cde8d1", "bad_well_known": "#f3bcbc", "bad_ambiguous": "#f3bcbc"}
     fig, ax = plt.subplots(figsize=(16, 6), layout="constrained")
     frame = frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
@@ -84,13 +84,17 @@ def plot_scores(frame: pd.DataFrame, threshold: float, era: str, output: Path) -
     ticks.update(np.argmin(np.abs(np.asarray(midpoints) - target))
                  for target in np.linspace(0, len(frame) - 1, 8))
     ax.set_xticks([midpoints[i] for i in sorted(ticks)], [str(runs[i]) for i in sorted(ticks)])
-    ax.legend(handles=[
-        Patch(facecolor=backgrounds["good"], edgecolor="#5a9e68", label="Good"),
-        Patch(facecolor=backgrounds["bad_well_known"], edgecolor="#be6868", label="Bad"),
+    handles = []
+    if frame.label.eq("good").any():
+        handles.append(Patch(facecolor=backgrounds["good"], edgecolor="#5a9e68", label="Good"))
+    if frame.label.ne("good").any():
+        handles.append(Patch(facecolor=backgrounds["bad_well_known"], edgecolor="#be6868", label="Bad"))
+    handles.extend([
         Line2D([], [], color="black", linestyle="--", label="Threshold"),
         Line2D([], [], marker="o", linestyle="none", color="#1769c2", label="LS"),
-    ], ncol=4, frameon=True, facecolor="white", framealpha=0.95)
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
+    ])
+    ax.legend(handles=handles, ncol=len(handles), frameon=True, facecolor="white", framealpha=0.95)
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=rlabel)
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -223,11 +227,13 @@ def main() -> None:
         old_plot.unlink()
     for era, frame in scores.groupby("era"):
         plot_scores(frame, threshold, era, plot_dir / f"{era}.png")
-    plot_scores(scores, threshold, "2025 all", plot_dir / "all.png")
-    test_scores = scores[scores.split == "test"]
-    plot_scores(test_scores, threshold, "2025 test", plot_dir / "test.png")
+    for split, name, label in (("train", "train", "Train"),
+                               ("validation", "val", "Validation"),
+                               ("test", "test", "Test")):
+        plot_scores(scores[scores.split == split], threshold, label, plot_dir / f"{name}.png")
+    plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
-    print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 4} plots in output/")
+    print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 6} plots in output/")
     print(f"Provisional-good test LS flag fraction: {metrics['flagged_ls_fraction_by_group']['test_good']:.3%}")
 
 
