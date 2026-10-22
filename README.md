@@ -10,7 +10,7 @@ bash runs/01_example.sh      # fetch one ME/run and plot its LS map
 bash runs/02_all_2025.sh     # collect 2025 Muon0 data; resumable, but lengthy
 bash runs/03_ae_base.sh      # train ae_base and plot LS scores
 bash runs/04_ae_bin.sh       # train ae_bin and plot scores plus ME reconstructions
-bash runs/05_me_plots.sh     # plot LS maps for 10 MEs in six test runs
+bash runs/05_me_plots.sh     # plot LS maps for 10 MEs in seven test runs
 ```
 
 The first DIALS query requests CERN authentication when needed. Run collection before the experiment on a fresh clone. The collector keeps all 2025 Muon0 processing versions except non-PromptReco 2025G tests; the experiment selects PromptReco only.
@@ -27,7 +27,7 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
 
-`05_me_plots.sh` draws LS-by-bin heatmaps for all 10 MEs in six test runs. The original three are Good 397332 and Bad 396153/395723 (one from each tracked Bad subtype), each selected for high median per-LS `GlbMuon_Glb_eta` entries in its group. Good 398902, 396735, and 398139 are the three Good test runs with the highest `ae_bin` flagged-LS fractions among runs with at least 100 LS (score > 1). Each run of the recipe refreshes `output/plots/mes/`, saving one `<ME>.png` under `good/<run>/` or `bad/<run>/`; its `plots.md` links the figures independently of the AE prediction plots. Plots display the Bad subtypes together and put `Run number (Good/Bad), era` above each single-run ME view.
+`05_me_plots.sh` draws LS-by-bin heatmaps for all 10 MEs in seven test runs. The representative runs remain Good 397332 and Bad 396153/395723. Four additional Good test runs—391670, 393240, 396727, and 398902—cover the high-score regions in `ae_base/test.png`. The rise near the 394000 tick belongs to 393240 because LS are concatenated on the horizontal axis. The recipe refreshes `output/plots/mes/`, saving each `<ME>.png` under `good/<run>/`, `bad/<run>/`, or `good_but_anomaly/<run>/`; its `plots.md` links the figures. Plots display the Bad subtypes together and put `Run number (Good/Bad), era` above each single-run ME view.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
 

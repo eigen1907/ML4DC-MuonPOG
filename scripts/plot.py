@@ -12,6 +12,7 @@ import pandas as pd
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Parquet file from fetch.py")
+    parser.add_argument("--good-but-anomaly", action="store_true")
     args = parser.parse_args()
 
     frame = pd.read_parquet(args.input).sort_values("ls_number")
@@ -29,6 +30,8 @@ def main() -> None:
     status = {"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}.get(label)
     if status is None:
         raise SystemExit(f"No Good/Bad label for run {run}")
+    if args.good_but_anomaly and status != "Good":
+        raise SystemExit(f"Run {run} is not labeled Good")
     axis_label = "ME x axis"
     if short_me.endswith("_eta"):
         axis_label = "Muon $\\eta$"
@@ -36,7 +39,8 @@ def main() -> None:
         axis_label = "Muon $p_T$"
     elif short_me.endswith("_phi"):
         axis_label = "Muon $\\phi$"
-    out = Path("output/plots/mes") / status.lower() / str(run) / f"{args.input.stem}.png"
+    group = "good_but_anomaly" if args.good_but_anomaly else status.lower()
+    out = Path("output/plots/mes") / group / str(run) / f"{args.input.stem}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
 
