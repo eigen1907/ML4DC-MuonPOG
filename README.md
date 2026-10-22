@@ -27,7 +27,7 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
 
-`05_me_plots.sh` plots all 10 MEs in seven test runs after `ae_base` training. The representative runs are Good 397332 and Bad 396153/395723; Good test runs 392251, 393240, 396763, and 398902 sample the four marked high-score regions. They were selected using offline eta statistics within those regions, not the much sparser OneHLT statistics. Raw LS-by-bin heatmaps are saved as `output/plots/mes/<group>/<run>/<ME>.png`. The model feature plots are saved as `output/plots/ae_base/{input,output,diff}/{stat,shape}/<group>/<run>/<ME>.png`, with a gallery at `output/plots/ae_base/plots.md`. Here `output` is the AE reconstruction and `diff` is input minus output. Shape input is normalized mean bin position (including the OneHLT adjustment) on a 0–1 scale; reconstructions may leave that range. Stat is Good-train-standardized `log1p(entries)`.
+`05_me_plots.sh` plots all 10 MEs in seven test runs after `ae_base` training. The representative runs are Good 397332 and Bad 396153/395723; Good test runs 392251, 393240, 396763, and 398902 sample the four marked high-score regions. They were selected using offline eta statistics within those regions, not the much sparser OneHLT statistics. Raw LS-by-bin heatmaps are saved as `output/plots/mes/<group>/<run>/<ME>.png`. The model feature plots are saved as `output/plots/ae_base/{stat,shape}/<group>/<run>/<ME>.png`, with a gallery at `output/plots/ae_base/plots.md`. Each feature figure overlays the input and AE reconstruction as LS points in a large upper panel, with input minus reconstruction in a smaller lower panel. Shape input is normalized mean bin position (including the OneHLT adjustment) on a 0–1 scale; reconstructions may leave that range. Stat is Good-train-standardized `log1p(entries)`.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
 
@@ -42,7 +42,7 @@ Run labels are provisional and apply to entire runs. Flagged-LS fractions are th
 | `output/model/{ae_base,ae_bin}/` | Fitted `model.pkl` files. |
 | `output/predict/{ae_base,ae_bin}/` | LS `scores.parquet` and `metrics.json`. |
 | `output/plots/mes/` | Raw per-LS ME heatmaps. |
-| `output/plots/ae_base/` | LS score plots, feature inputs/reconstructions/differences, and gallery. |
+| `output/plots/ae_base/` | LS score plots, stat/shape feature comparisons, and gallery. |
 | `output/plots/ae_bin/` | LS score and bin reconstruction plots. |
 
 Everything under `output/` is generated and ignored by Git; `.gitkeep` preserves its four top-level directories.

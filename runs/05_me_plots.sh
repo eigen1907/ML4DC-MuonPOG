@@ -8,9 +8,9 @@ if [ ! -f output/model/ae_base/model.pkl ]; then
 fi
 
 index=output/plots/ae_base/plots.md
-rm -rf output/plots/mes output/plots/ae_base/input output/plots/ae_base/output output/plots/ae_base/diff
+rm -rf output/plots/mes output/plots/ae_base/{input,output,diff,stat,shape}
 mkdir -p "$(dirname "$index")"
-printf '# Muons ME and ae_base feature plots\n\nRaw ME plots show LS-by-bin contents. For each ae_base feature, input is the model input, output is its reconstruction, and diff is input minus output. Shape is the normalized mean bin position (with OneHLT shrinkage); stat is Good-train-standardized `log1p(entries)`.\n\n' > "$index"
+printf '# Muons ME and ae_base feature plots\n\nRaw ME plots show LS-by-bin contents. Each feature plot overlays input and AE output above their difference (input minus output). Shape is the normalized mean bin position (with OneHLT shrinkage); stat is Good-train-standardized `log1p(entries)`.\n\n' > "$index"
 
 for folder in \
   output/dataset/raw/Muon0__Run2025F-PromptReco-v1__DQMIO/397332 \
@@ -28,7 +28,7 @@ for folder in \
     *) echo "Unexpected run: $run" >&2; exit 1 ;;
   esac
   relative=$group/$run
-  printf '## %s — Run %s\n\n| ME | Raw | Shape: input / output / diff | Stat: input / output / diff |\n|---|---|---|---|\n' "$label" "$run" >> "$index"
+  printf '## %s — Run %s\n\n| ME | Raw | Stat | Shape |\n|---|---|---|---|\n' "$label" "$run" >> "$index"
   for file in "$folder"/Muons__*.parquet; do
     if [ "$group" = good_but_anomaly ]; then
       uv run --locked python scripts/plot.py --input "$file" --good-but-anomaly
@@ -37,9 +37,8 @@ for folder in \
     fi
     me=${file##*/}
     me=${me%.parquet}
-    printf '| `%s` | [ME](../mes/%s/%s.png) | [input](input/shape/%s/%s.png) / [output](output/shape/%s/%s.png) / [diff](diff/shape/%s/%s.png) | [input](input/stat/%s/%s.png) / [output](output/stat/%s/%s.png) / [diff](diff/stat/%s/%s.png) |\n' \
-      "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" \
-      "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
+    printf '| `%s` | [ME](../mes/%s/%s.png) | [Stat](stat/%s/%s.png) | [Shape](shape/%s/%s.png) |\n' \
+      "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
   done
   uv run --locked python scripts/plot_ae_base.py --folder "$folder" --group "$group"
   printf '\n' >> "$index"
