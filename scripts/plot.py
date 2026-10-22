@@ -31,10 +31,8 @@ def main() -> None:
         axis_label = "Muon $p_T$"
     elif short_me.endswith("_phi"):
         axis_label = "Muon $\\phi$"
-    out = Path("output/plots/mes") / args.input.relative_to("output/dataset/raw").with_suffix("")
-    out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("*.png"):
-        old.unlink()
+    out = Path("output/plots/mes") / args.input.relative_to("output/dataset/raw").with_suffix(".png")
+    out.parent.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
 
     grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
@@ -50,9 +48,9 @@ def main() -> None:
     fig.colorbar(image, ax=ax, label="Bin content")
     ax.set(xlabel="Lumisection", ylabel=axis_label)
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
-    fig.savefig(out / "contents.png", dpi=160, bbox_inches="tight")
+    fig.savefig(out, dpi=160, bbox_inches="tight")
     plt.close(fig)
-    print("Saved", out / "contents.png")
+    print("Saved", out)
 
 
 if __name__ == "__main__":

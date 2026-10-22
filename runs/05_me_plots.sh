@@ -23,8 +23,7 @@ for folder in \
     uv run --locked python scripts/plot.py --input "$file"
     me=${file##*/}
     me=${me%.parquet}
-    path="$relative/$me"
-    printf '| %s | [Contents](%s/contents.png) |\n' "$me" "$path" >> "$index"
+    printf '| %s | [Contents](%s/%s.png) |\n' "$me" "$relative" "$me" >> "$index"
   done
   printf '\n' >> "$index"
 done
