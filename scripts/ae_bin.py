@@ -75,14 +75,12 @@ def plot_me(ls: np.ndarray, original: np.ndarray, predicted: np.ndarray,
         ("prediction", predicted, count_norm, "viridis"),
         ("residual", difference, diff_norm, "coolwarm"),
     ):
-        fig, ax = plt.subplots(figsize=(12, 6))
-        fig.subplots_adjust(left=0.12, right=0.86, bottom=0.13, top=0.85)
-        fig.text(0.12, 0.98, r"$\bf{CMS}$ Work in Progress", va="top")
-        fig.text(0.86, 0.98, era, ha="right", va="top")
+        fig, ax = plt.subplots(figsize=(12, 6), layout="constrained")
         image = ax.imshow(values.T, origin="lower", aspect="auto", extent=extent,
                           interpolation="nearest", norm=norm, cmap=cmap)
         ax.set(xlabel="LS", ylabel="ME x axis")
         fig.colorbar(image, ax=ax, label="Bin count" if name != "residual" else "Count difference")
+        hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
         fig.savefig(output / f"{name}.png", dpi=160, bbox_inches="tight")
         plt.close(fig)
 

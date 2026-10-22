@@ -9,11 +9,6 @@ import numpy as np
 import pandas as pd
 
 
-def header(fig, era: str) -> None:
-    fig.text(0.12, 0.98, r"$\bf{CMS}$ Work in Progress", va="top")
-    fig.text(0.96, 0.98, era, ha="right", va="top")
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="Parquet file from fetch.py")
@@ -28,7 +23,6 @@ def main() -> None:
     if (frame.x_min != x_min).any() or (frame.x_max != x_max).any():
         raise SystemExit("Histogram ranges vary across LS; inspect before plotting")
     edges = np.linspace(x_min, x_max, counts.shape[1] + 1)
-    centers = (edges[:-1] + edges[1:]) / 2
     short_me = str(frame.iloc[0].me).rsplit("/", 1)[-1]
     era = str(frame.iloc[0].dataset).split("/")[2].split("-")[0].removeprefix("Run")
     axis_label = "ME x axis"
@@ -42,20 +36,18 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    fig.subplots_adjust(left=0.12, right=0.96, bottom=0.13, top=0.85)
+    fig, ax = plt.subplots(figsize=(14, 6), layout="constrained")
     ax.stairs(counts.sum(axis=0), edges)
     ax.set(xlabel=axis_label, ylabel="Bin count")
     if short_me.endswith("_pt"):
         ax.set_yscale("log")
-    header(fig, era)
-    fig.savefig(out / "histogram.png", dpi=160)
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
+    fig.savefig(out / "histogram.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
 
     grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
     grid[ls - ls.min()] = counts
-    fig, ax = plt.subplots(figsize=(15, 8))
-    fig.subplots_adjust(left=0.10, right=0.86, bottom=0.13, top=0.85)
+    fig, ax = plt.subplots(figsize=(15, 8), layout="constrained")
     image = ax.imshow(
         grid.T,
         origin="lower",
@@ -65,39 +57,10 @@ def main() -> None:
     )
     fig.colorbar(image, ax=ax, label="Bin content")
     ax.set(xlabel="Lumisection", ylabel=axis_label)
-    header(fig, era)
-    fig.savefig(out / "contents.png", dpi=160)
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=era)
+    fig.savefig(out / "contents.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
-
-    fig, (top, bottom) = plt.subplots(2, 1, figsize=(15, 9), sharex=True)
-    fig.subplots_adjust(left=0.14, right=0.96, bottom=0.10, top=0.85, hspace=0.10)
-    totals = counts.sum(axis=1)
-    mean_x = np.divide(
-        counts @ centers,
-        totals,
-        out=np.full(len(totals), np.nan),
-        where=totals > 0,
-    )
-    top.plot(ls, totals, marker=".", linestyle="none")
-    bottom.plot(ls, mean_x, marker=".", linestyle="none")
-    top.set(ylabel="Sum of bin contents")
-    bottom.set(xlabel="Lumisection", ylabel=f"Mean {axis_label}")
-    header(fig, era)
-    fig.savefig(out / "statistics.png", dpi=160)
-    plt.close(fig)
-
-    nonzero = np.flatnonzero(totals > 0)
-    selected = sorted({int(nonzero[0]), int(nonzero[len(nonzero) // 2]), int(nonzero[-1])}) if len(nonzero) else [0]
-    fig, ax = plt.subplots(figsize=(15, 8))
-    fig.subplots_adjust(left=0.13, right=0.96, bottom=0.13, top=0.85)
-    for index in selected:
-        ax.stairs(counts[index], edges, label=f"LS {ls[index]}")
-    ax.set(xlabel=axis_label, ylabel="Bin content")
-    ax.legend(frameon=False)
-    header(fig, era)
-    fig.savefig(out / "examples.png", dpi=160)
-    plt.close(fig)
-    print("Saved four figures in", out)
+    print("Saved two figures in", out)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 `ae_bin` takes all 1,080 stored bins from the same 10 MEs. It uses `ae_base` scores for the shared run split, fits on 20,000 sampled Good training LS, and checks 5,000 Good validation LS. Its score balances the MEs and adjusts for five `eta_entries` ranges using all Good validation LS; the final threshold is **1 for every LS**. It also plots original, predicted, and residual bin contents for one representative run from each test group.
 
-`05_me_plots.sh` separately draws ordinary run-summed 1D histograms for all 10 MEs in those three runs, along with raw LS heatmaps, statistics, and example LS histograms. The representative test runs are Good 397332, Bad (well known) 396153, and Bad (ambiguous) 395723: each has the highest median per-LS `GlbMuon_Glb_eta` entries in its group. Each run of the recipe refreshes `output/plots/mes/`; its `plots.md` links the figures independently of the AE prediction plots. Figures have no titles; CMS and era labels remain.
+`05_me_plots.sh` draws run-summed 1D histograms and LS-by-bin heatmaps for all 10 MEs in three test runs. The representative runs are Good 397332, Bad (well known) 396153, and Bad (ambiguous) 395723: each has the highest median per-LS `GlbMuon_Glb_eta` entries in its group. Each run of the recipe refreshes `output/plots/mes/`; its `plots.md` links the figures independently of the AE prediction plots. Figures have no titles; CMS and era labels remain.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
 

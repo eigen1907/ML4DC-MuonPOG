@@ -18,13 +18,13 @@ for folder in \
     395723) label='Bad (ambiguous)' ;;
   esac
   relative=${folder#output/dataset/raw/}
-  printf '## %s — Run %s\n\n| ME | 1D histogram | LS examples | LS map | Statistics |\n|---|---|---|---|---|\n' "$label" "$run" >> "$index"
+  printf '## %s — Run %s\n\n| ME | 1D histogram | LS map |\n|---|---|---|\n' "$label" "$run" >> "$index"
   for file in "$folder"/Muons__*.parquet; do
     uv run --locked python scripts/plot.py --input "$file"
     me=${file##*/}
     me=${me%.parquet}
     path="$relative/$me"
-    printf '| %s | [Histogram](%s/histogram.png) | [Examples](%s/examples.png) | [Contents](%s/contents.png) | [Statistics](%s/statistics.png) |\n' "$me" "$path" "$path" "$path" "$path" >> "$index"
+    printf '| %s | [Histogram](%s/histogram.png) | [Contents](%s/contents.png) |\n' "$me" "$path" "$path" >> "$index"
   done
   printf '\n' >> "$index"
 done
