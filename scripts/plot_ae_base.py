@@ -65,7 +65,7 @@ def main() -> None:
             ax.legend(markerscale=4)
             hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
                           rlabel=f"Run {run} ({status}), {era}")
-            diff_ax.scatter(ls, diff, s=8, color="#1769c2", alpha=0.75, linewidths=0,
+            diff_ax.scatter(ls, diff, s=8, color="#7b3294", alpha=0.75, linewidths=0,
                             rasterized=True)
             diff_ax.axhline(0, color="black", linestyle="--", linewidth=1)
             diff_ax.set(xlabel="Lumisection", ylabel="Diff")
