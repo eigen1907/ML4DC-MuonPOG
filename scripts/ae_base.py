@@ -78,7 +78,7 @@ def shrink_hlt_shapes(data: pd.DataFrame, priors: dict[str, float], prior_count:
 
 
 def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path,
-                marked_runs: tuple[int, ...] = ()) -> None:
+                marked_ranges: tuple[tuple[int, int], ...] = ()) -> None:
     backgrounds = {"good": "#cde8d1", "bad_well_known": "#f3bcbc", "bad_ambiguous": "#f3bcbc"}
     fig, ax = plt.subplots(figsize=(14.5, 6), layout="constrained")
     frame = frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
@@ -86,14 +86,6 @@ def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path
     for run, group in frame.groupby("run_number", sort=False):
         first, last = int(group.index[0]), int(group.index[-1])
         ax.axvspan(first - 0.5, last + 0.5, color=backgrounds[group.label.iloc[0]], zorder=0)
-        if run in marked_runs:
-            ax.axvspan(first - 0.5, last + 0.5, fill=False, edgecolor="#b2182b",
-                       linewidth=1.5, linestyle="--", zorder=4)
-            midpoint = (first + last) / 2
-            align = "left" if midpoint < 0.1 * len(frame) else "right" if midpoint > 0.9 * len(frame) else "center"
-            ax.text(midpoint, 0.03, str(run), transform=ax.get_xaxis_transform(),
-                    ha=align, va="bottom", color="#b2182b", zorder=6,
-                    bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9})
         runs.append(run)
         midpoints.append((first + last) / 2)
     ax.scatter(np.arange(len(frame)), frame.anomaly_score, s=9, alpha=0.5,
@@ -101,6 +93,18 @@ def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path
     ax.axhline(threshold, color="black", linestyle="--")
     ax.set_yscale("log")
     ax.set(xlabel="Run number", ylabel="Anomaly score", xlim=(-0.5, len(frame) - 0.5))
+    for label, (low, high) in zip("ABCD", marked_ranges):
+        region = frame[frame.run_number.between(low, high)]
+        if region.empty:
+            continue
+        first, last = int(region.index[0]), int(region.index[-1])
+        ax.axvspan(first - 0.5, last + 0.5, fill=False, edgecolor="#b2182b",
+                   linewidth=1.5, linestyle="--", zorder=4)
+        midpoint = (first + last) / 2
+        align = "left" if midpoint < 0.1 * len(frame) else "right" if midpoint > 0.9 * len(frame) else "center"
+        ax.text(midpoint, 0.03, label, transform=ax.get_xaxis_transform(),
+                ha=align, va="bottom", color="#b2182b", zorder=6,
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.9})
     ticks = {0, len(runs) - 1}
     ticks.update(np.argmin(np.abs(np.asarray(midpoints) - target))
                  for target in np.linspace(0, len(frame) - 1, 8))
@@ -270,7 +274,8 @@ def main() -> None:
                                ("validation", "val", "Validation"),
                                ("test", "test", "Test")):
         plot_scores(scores[scores.split == split], threshold, label, plot_dir / f"{name}.png",
-                    marked_runs=(391670, 393240, 396727, 398902) if split == "test" else ())
+                    marked_ranges=((391550, 392090), (393240, 393240),
+                                   (396727, 396763), (398902, 398902)) if split == "test" else ())
     plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
     print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 6} plots in output/")

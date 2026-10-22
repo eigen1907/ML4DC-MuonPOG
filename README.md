@@ -36,9 +36,11 @@ The wider model reconstructs better but flags more Good test LS, so this is not 
 
 Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
 
-`05_me_plots.sh` plots all 10 MEs in seven test runs after `ae_base` training. The representative runs are Good 397332 and Bad 396153/395723; Good test runs 391670, 393240, 396727, and 398902 sample the four marked high-score regions. Runs 391670 and 396727 capture sustained score peaks despite low offline-eta statistics (median 20 and 59 entries/LS). Raw LS-by-bin heatmaps are saved as `output/plots/mes/<group>/<run>/<ME>.png`. The model feature plots are saved as `output/plots/ae_base/{stat,shape}/<group>/<run>/<ME>.png`, with a gallery at `output/plots/ae_base/plots.md`. Each feature figure overlays the input and AE reconstruction as LS points in a large upper panel, with input minus reconstruction in a smaller lower panel. Shape input is normalized mean bin position (including the OneHLT adjustment) on a 0–1 scale; reconstructions may leave that range. Stat is Good-train-standardized `log1p(entries)`.
+`05_me_plots.sh` makes seven plot cases from 19 test runs: standalone Good 397332 and Bad 396153/395723, plus four combined provisional-Good regions A–D from the dense elevated clumps on the current `output/plots/ae_base/test.png`. A (2025B) combines 10 runs/610 LS, B (2025C) 1/4,777, C (2025F) 4/1,507, and D (2025G) 1/428. Their member runs are listed in the gallery. The 16 selected runs contain 7,322 LS, of which 3,806 are above threshold; each regional plot includes **all** LS in run order, including below-threshold and low/zero-stat LS, with run numbers on the x axis.
 
-The diff panels use fixed ranges across runs and MEs: shape `[-0.4, 0.4]` and stat `[-1.25, 1.25]`.
+For controls, raw heatmaps are saved as `output/plots/mes/{good,bad}/<run>/<ME>.png`; for regions, as `output/plots/mes/good_but_anomaly/<A|B|C|D>/<ME>.png`. The corresponding feature plots use the same suffix under `output/plots/ae_base/{stat,shape}/`, with a gallery at `output/plots/ae_base/plots.md`. Each feature figure overlays the input and AE reconstruction as LS points in a large upper panel, with input minus reconstruction in a smaller lower panel. Shape input is normalized mean bin position (including the OneHLT adjustment) on a 0–1 scale; reconstructions may leave that range. Stat is Good-train-standardized `log1p(entries)`.
+
+The diff panels use fixed ranges across runs and MEs: shape `[-0.5, 0.5]` and stat `[-1.25, 1.25]`.
 
 Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
 
