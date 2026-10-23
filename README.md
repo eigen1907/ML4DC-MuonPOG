@@ -9,8 +9,7 @@ uv sync
 bash runs/01_example.sh      # fetch one ME/run and plot its raw histogram
 bash runs/02_all_2025.sh     # collect 2025 Muon0 data; resumable, but lengthy
 bash runs/03_ae_base.sh      # train ae_base and plot LS scores
-bash runs/04_ae_bin.sh       # train ae_bin and plot scores plus ME reconstructions
-bash runs/05_me_plots.sh     # plot raw MEs and ae_base feature reconstructions
+bash runs/04_me_plots.sh     # plot raw MEs and ae_base feature reconstructions
 ```
 
 The first DIALS query requests CERN authentication when needed. Run collection before the experiment on a fresh clone. The collector keeps all 2025 Muon0 processing versions except non-PromptReco 2025G tests; the experiment selects PromptReco only.
@@ -21,41 +20,31 @@ The first DIALS query requests CERN authentication when needed. Run collection b
 
 The collector writes the DIALS run list to `output/dataset/runs.csv` and one Parquet per dataset/run/ME to `output/dataset/raw/`. The experiment selects PromptReco runs and checks them against the tracked labels. Good runs are split by run within each era: about 70% train, 15% validation, and 15% test. Both Bad groups join the test set. Only Good training LS fit the models.
 
-`ae_base` uses two summaries from each ME (`log1p(entries)` and mean histogram position), giving 20 inputs to a 20→16→8→16→20 autoencoder. For the two sparse OneHLT MEs, it pulls the shape mean toward the Good-train pooled mean using 10 in-range-bin pseudo-counts; `log1p(entries)` remains unchanged. The scaler fits raw Good-train features before this adjustment so that standardization does not undo it. Its threshold is the 95th percentile of Good validation LS scores.
+`ae_base` uses histogram mean and population standard deviation from eight MEs, excluding the two `MuonRecoOneHLT/` MEs. All ten MEs remain cached and available in raw ME and entries plots. Bin centers are normalized as `(center - xmin) / (xmax - xmin)`; η retains the original `abs(center) / max(abs(xmin), abs(xmax))` definition. Mean and std are the count-weighted moments of those positions; there is no low-stat correction or reference histogram. Empty histograms use mean = std = 0 when no distribution is observed. Entries remain diagnostic metadata, not AE inputs.
 
-The earlier 20→8→3→8→20 model is archived under `output/{model,predict,plots}/ae_base_small/`. The architecture comparison kept the data, run split, scaler, OneHLT priors, seed (42), and 80 training epochs fixed. Each model uses its own Good-validation threshold.
+The 16 features are standardized using Good training LS and feed a 16→8→4→8→16 autoencoder (seed 42, 80 epochs). The LS anomaly score is the mean squared reconstruction error of mean/std in standardized feature units. One fixed threshold is set at the 95th percentile of Good validation LS scores.
 
-| Architecture | Train MSE | Validation MSE | Threshold | Good test LS flagged | Known Bad LS flagged | Ambiguous Bad LS flagged |
-|---|---:|---:|---:|---:|---:|---:|
-| 20→8→3→8→20 | 0.02775 | 0.01637 | 0.03120 | 8.25% | 96.65% | 99.54% |
-| 20→16→8→16→20 | 0.003452 | 0.002532 | 0.003068 | 11.26% | 99.80% | 99.07% |
+The experiment saves LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), along with `loss.png` and `distributions.png`. It does not make period-specific score plots.
 
-The wider model reconstructs better but flags more Good test LS, so this is not a universal performance improvement. Labels are at run level; the flagged percentages are LS fractions, not classification rates. Full numbers are in `output/predict/ae_base/architecture_comparison.json`, with a loss plot at `output/plots/ae_base/architecture_loss.png`.
+`04_me_plots.sh` makes seven plot cases from 19 test runs: standalone Good 397332 and Bad 396153/395723, plus four combined provisional-Good regions A–D from the dense elevated clumps selected on the previous mean-only test plot. A (2025B) combines 10 runs/610 LS, B (2025C) 1/4,777, C (2025F) 4/1,507, and D (2025G) 1/428. Their member runs are listed in the gallery. The 16 selected runs contain 7,322 LS. AE mean/std/stat region plots retain **all** LS in run order, including below-threshold and low/zero-stat LS, with run-number ticks.
 
-`ae_bin` takes all 1,080 stored bins from the same 10 MEs. It uses `ae_base` scores for the shared run split, fits on 20,000 sampled Good training LS, and checks 5,000 Good validation LS. Its score balances the MEs and adjusts for five `eta_entries` ranges using all Good validation LS; the final threshold is **1 for every LS**. It also plots original, predicted, and residual bin contents for one representative run from each test group.
+For controls, raw ME heatmaps are saved as `output/plots/mes/{good,bad}/<run>/<ME>.png`; for regions, as `output/plots/mes/good_but_anomaly/<A|B|C|D>/<ME>.png`. They show stored bin counts for recorded LS. Single-run heatmaps keep actual LS numbers and missing-LS gaps; region heatmaps concatenate all recorded LS with run-number ticks. The corresponding plots use the same suffix under `output/plots/ae_base/{stat,mean,std}/`, with a gallery at `output/plots/ae_base/plots.md`. All ten MEs have raw ME and stat plots; only the eight AE inputs have mean/std reconstruction plots. Mean/std figures overlay the input and AE reconstruction as LS points in a large upper panel, with input minus reconstruction in a smaller lower panel. Mean and std use normalized-position units (0–1 and 0–0.5 respectively); AE outputs may leave those ranges. Stat figures show raw entries in a single panel for diagnosis, without AE predictions or residuals.
 
-Both AE experiments save LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), plus one plot per era.
+The diff panels use linear axes with fixed zoom ranges across runs and MEs: mean `[-0.1, 0.1]` and std `[-0.02, 0.02]`. Residuals outside these ranges are indicated by up/down triangles near the panel boundaries; the upper panel still shows the full input and output values.
 
-`05_me_plots.sh` makes seven plot cases from 19 test runs: standalone Good 397332 and Bad 396153/395723, plus four combined provisional-Good regions A–D from the dense elevated clumps on the current `output/plots/ae_base/test.png`. A (2025B) combines 10 runs/610 LS, B (2025C) 1/4,777, C (2025F) 4/1,507, and D (2025G) 1/428. Their member runs are listed in the gallery. The 16 selected runs contain 7,322 LS, of which 3,806 are above threshold; each regional plot includes **all** LS in run order, including below-threshold and low/zero-stat LS, with run numbers on the x axis.
-
-For controls, raw heatmaps are saved as `output/plots/mes/{good,bad}/<run>/<ME>.png`; for regions, as `output/plots/mes/good_but_anomaly/<A|B|C|D>/<ME>.png`. The corresponding feature plots use the same suffix under `output/plots/ae_base/{stat,shape}/`, with a gallery at `output/plots/ae_base/plots.md`. Each feature figure overlays the input and AE reconstruction as LS points in a large upper panel, with input minus reconstruction in a smaller lower panel. Shape input is normalized mean bin position (including the OneHLT adjustment) on a 0–1 scale; reconstructions may leave that range. Stat is Good-train-standardized `log1p(entries)`.
-
-The diff panels use fixed ranges across runs and MEs: shape `[-0.5, 0.5]` and stat `[-1.25, 1.25]`.
-
-Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics; the bin score's occupancy adjustment can also suppress count-only anomalies.
+Run labels are provisional and apply to entire runs. Flagged-LS fractions are therefore exploratory, not LS classification metrics.
 
 ## Files
 
 | Path | Purpose |
 |---|---|
 | `data/run_labels.csv` | Tracked run labels; the only input needed in Git. |
-| `scripts/` | DIALS retrieval, raw ME plots, and the two AE experiments. |
-| `runs/` | Five short bash recipes. |
+| `scripts/` | DIALS retrieval, raw ME plots, and the ae_base experiment. |
+| `runs/` | Four short bash recipes. |
 | `output/dataset/` | Generated run list and cached per-LS ME Parquet files. |
-| `output/model/{ae_base,ae_bin}/` | Fitted `model.pkl` files. |
-| `output/predict/{ae_base,ae_bin}/` | LS `scores.parquet` and `metrics.json`. |
+| `output/model/ae_base/` | Fitted `model.pkl`. |
+| `output/predict/ae_base/` | LS `scores.parquet` and `metrics.json`. |
 | `output/plots/mes/` | Raw per-LS ME heatmaps. |
-| `output/plots/ae_base/` | LS score plots, stat/shape feature comparisons, and gallery. |
-| `output/plots/ae_bin/` | LS score and bin reconstruction plots. |
+| `output/plots/ae_base/` | LS scores, mean/std reconstructions, diagnostic entries, and gallery. |
 
 Everything under `output/` is generated and ignored by Git; `.gitkeep` preserves its four top-level directories.

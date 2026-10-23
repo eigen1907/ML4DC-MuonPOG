@@ -8,19 +8,21 @@ if [ ! -f output/model/ae_base/model.pkl ]; then
 fi
 
 index=output/plots/ae_base/plots.md
-rm -rf output/plots/mes output/plots/ae_base/{input,output,diff,stat,shape}
+rm -rf output/plots/mes output/plots/ae_base/{stat,mean,std}
 mkdir -p "$(dirname "$index")"
 cat > "$index" <<'EOF'
 # Muons ME and ae_base feature plots
 
-The four Good-test clumps on [test.png](test.png) are:
+The four regions selected from the previous mean-only test plot are marked on [test.png](test.png):
 
 - A (2025B, 610 LS): 391550, 391670, 391675, 391677, 391682, 391826, 391906, 391953, 392088, 392090
 - B (2025C, 4,777 LS): 393240
 - C (2025F, 1,507 LS): 396727, 396735, 396757, 396763
 - D (2025G, 428 LS): 398902
 
-Each region figure concatenates all LS in run order, with run numbers on the x axis. Below-threshold and low/zero-stat LS remain. Raw ME plots show LS-by-bin contents. Each feature plot overlays input and AE output above their difference (input minus output). Shape is the normalized mean bin position (with OneHLT shrinkage); stat is Good-train-standardized `log1p(entries)`.
+Raw ME heatmaps show stored bin counts for recorded LS. Single-run plots keep actual LS numbers and missing-LS gaps; region plots concatenate all recorded LS with run-number ticks. AE mean/std/stat region plots retain all LS, including below-threshold and low/zero-stat LS, with run-number ticks. Mean/std plots overlay input and AE output above their difference (input minus output). Mean and std are calculated directly from histogram bin positions normalized to 0–1, without low-stat correction. Empty histograms use mean = std = 0 when no distribution is observed. The two MuonRecoOneHLT MEs are excluded from AE inputs; their raw ME and entries plots remain available. Entries plots show raw statistics for diagnosis only; entries are not AE inputs or part of the anomaly score.
+
+Diff panels use fixed linear ranges: mean ±0.1 and std ±0.02. Up/down triangles indicate residuals beyond the displayed range; the upper panel shows the full input and output values.
 
 EOF
 
@@ -52,7 +54,7 @@ for selection in 397332 396153 395723 A B C D; do
   for folder in "${folders[@]}"; do
     files+=("$folder"/Muons__*.parquet)
   done
-  printf '## %s\n\n| ME | Raw | Stat | Shape |\n|---|---|---|---|\n' "$label" >> "$index"
+  printf '## %s\n\n| ME | Raw ME | Entries (diagnostic) | Mean | Std |\n|---|---|---|---|---|\n' "$label" >> "$index"
   if [ "$group" = good ] || [ "$group" = bad ]; then
     uv run --locked python scripts/plot.py --input "${files[@]}"
   else
@@ -61,8 +63,13 @@ for selection in 397332 396153 395723 A B C D; do
   for file in "${folders[0]}"/Muons__*.parquet; do
     me=${file##*/}
     me=${me%.parquet}
-    printf '| `%s` | [ME](../mes/%s/%s.png) | [Stat](stat/%s/%s.png) | [Shape](shape/%s/%s.png) |\n' \
-      "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
+    if [[ "$me" == Muons__MuonRecoOneHLT__* ]]; then
+      printf '| `%s` | [ME](../mes/%s/%s.png) | [Entries](stat/%s/%s.png) | — (not an AE input) | — (not an AE input) |\n' \
+        "$me" "$relative" "$me" "$relative" "$me" >> "$index"
+    else
+      printf '| `%s` | [ME](../mes/%s/%s.png) | [Entries](stat/%s/%s.png) | [Mean](mean/%s/%s.png) | [Std](std/%s/%s.png) |\n' \
+        "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" "$relative" "$me" >> "$index"
+    fi
   done
   uv run --locked python scripts/plot_ae_base.py --folder "${folders[@]}" --group "$group"
   printf '\n' >> "$index"

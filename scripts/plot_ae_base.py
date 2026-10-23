@@ -1,15 +1,16 @@
-"""Plot ae_base inputs, reconstructions, and residuals for a run or region."""
+"""Plot ae_base mean/std reconstructions and diagnostic entries for a run or region."""
 
 import argparse
 import pickle
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.offsetbox import AnchoredText
 import mplhep as hep
 import numpy as np
 import pandas as pd
 
-from ae_base import load_run, shrink_hlt_shapes
+from ae_base import load_run
 
 
 def main() -> None:
@@ -42,7 +43,6 @@ def main() -> None:
         {"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"})
     if not run_status.eq(status).all():
         raise SystemExit("Run labels disagree with the requested plot group")
-    shrink_hlt_shapes(data, saved["hlt_shape_priors"], saved["hlt_shape_prior_count"])
     features = saved["features"]
     scaled = saved["scaler"].transform(data[features].to_numpy(dtype=np.float32))
     predicted = saved["model"].predict(scaled)
@@ -60,46 +60,59 @@ def main() -> None:
 
     for file in me_files:
         stem = file.removesuffix(".parquet")
-        for kind, suffix in (("stat", "log_entries"), ("shape", "shape_mean")):
-            index = features.index(f"{stem}__{suffix}")
-            input_values = scaled[:, index]
-            output_values = predicted[:, index]
-            if kind == "shape":
-                scale = saved["scaler"].scale_[index]
-                center = saved["scaler"].mean_[index]
-                input_values = input_values * scale + center
-                output_values = output_values * scale + center
-            units = "Stat (scaled)" if kind == "stat" else "Shape mean"
-            diff = input_values - output_values
+        for kind in ("stat", "mean", "std"):
+            if kind != "stat" and f"{stem}__{kind}" not in features:
+                continue
             out = Path("output/plots/ae_base") / kind / relative / f"{stem}.png"
             out.parent.mkdir(parents=True, exist_ok=True)
-            fig, (ax, diff_ax) = plt.subplots(
-                2, 1, figsize=(11, 7), sharex=True, layout="constrained",
-                gridspec_kw={"height_ratios": (3, 1), "hspace": 0.05},
-            )
-            ax.scatter(x, input_values, s=8, color="#1769c2", alpha=0.65, linewidths=0,
-                       label="Input", rasterized=True)
-            ax.scatter(x, output_values, s=10, marker="x", color="#d65f16", alpha=0.75,
-                       linewidths=0.7, label="Output", rasterized=True)
-            ax.set_ylabel(units)
-            if kind == "shape":
-                # Keep the 0–1 reference range and show any unbounded AE outputs.
-                ax.set_ylim(min(0, output_values.min() - 0.02), max(1, output_values.max() + 0.02))
-            ax.legend(markerscale=4)
+            if kind == "stat":
+                fig, ax = plt.subplots(figsize=(11, 6), layout="constrained")
+                ax.scatter(x, data[f"{stem}__entries"], s=8, color="#1769c2", alpha=0.65,
+                           linewidths=0, rasterized=True)
+                ax.set_ylabel("Entries")
+                ax.set_ylim(bottom=0)
+                bottom_ax = ax
+                axes = (ax,)
+            else:
+                index = features.index(f"{stem}__{kind}")
+                scale = saved["scaler"].scale_[index]
+                center = saved["scaler"].mean_[index]
+                input_values = scaled[:, index] * scale + center
+                output_values = predicted[:, index] * scale + center
+                fig, (ax, diff_ax) = plt.subplots(
+                    2, 1, figsize=(11, 7), sharex=True, layout="constrained",
+                    gridspec_kw={"height_ratios": (3, 1), "hspace": 0.05},
+                )
+                ax.scatter(x, input_values, s=8, color="#1769c2", alpha=0.65, linewidths=0,
+                           label="Input", rasterized=True)
+                ax.scatter(x, output_values, s=10, marker="x", color="#d65f16", alpha=0.75,
+                           linewidths=0.7, label="Output", rasterized=True)
+                ax.set_ylabel(kind.capitalize())
+                # Show the physical reference range and any unbounded AE outputs.
+                upper = 1 if kind == "mean" else 0.5
+                ax.set_ylim(min(0, output_values.min() - 0.02), max(upper, output_values.max() + 0.02))
+                ax.add_artist(AnchoredText(stem.rsplit("__", 1)[-1], loc="upper left", frameon=False))
+                ax.legend(loc="upper right", markerscale=4)
+                diff = input_values - output_values
+                diff_ax.scatter(x, diff, s=8, color="#7b3294", alpha=0.75,
+                                linewidths=0, rasterized=True)
+                diff_ax.axhline(0, color="black", linestyle="--", linewidth=1)
+                limit = 0.1 if kind == "mean" else 0.02
+                diff_ax.set(ylabel="Diff", ylim=(-limit, limit), yticks=(-limit, 0, limit))
+                for mask, marker, boundary in ((diff > limit, "^", limit), (diff < -limit, "v", -limit)):
+                    diff_ax.scatter(x[mask], np.full(mask.sum(), 0.95 * boundary), s=22,
+                                    marker=marker, color="#7b3294", linewidths=0, rasterized=True)
+                bottom_ax = diff_ax
+                axes = (ax, diff_ax)
             hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
                           rlabel=rlabel)
-            diff_ax.scatter(x, diff, s=8, color="#7b3294", alpha=0.75, linewidths=0,
-                            rasterized=True)
-            diff_ax.axhline(0, color="black", linestyle="--", linewidth=1)
-            limit = 1.25 if kind == "stat" else 0.5
-            diff_ax.set(xlabel="Run number" if region else "Lumisection", ylabel="Diff", ylim=(-limit, limit),
-                        yticks=(-limit, 0, limit))
+            bottom_ax.set_xlabel("Run number" if region else "Lumisection")
             if region:
-                diff_ax.set_xlim(-0.5, len(data) - 0.5)
-                diff_ax.set_xticks(midpoints[ticks], sizes.index.to_numpy()[ticks].astype(str))
+                bottom_ax.set_xlim(-0.5, len(data) - 0.5)
+                bottom_ax.set_xticks(midpoints[ticks], sizes.index.to_numpy()[ticks].astype(str))
                 for boundary in edges[1:-1] - 0.5:
-                    ax.axvline(boundary, color="gray", linewidth=0.5, alpha=0.4, zorder=0)
-                    diff_ax.axvline(boundary, color="gray", linewidth=0.5, alpha=0.4, zorder=0)
+                    for panel in axes:
+                        panel.axvline(boundary, color="gray", linewidth=0.5, alpha=0.4, zorder=0)
             fig.savefig(out, dpi=160, bbox_inches="tight")
             plt.close(fig)
     print(f"Saved ae_base feature plots for {rlabel}: {len(data)} LS")

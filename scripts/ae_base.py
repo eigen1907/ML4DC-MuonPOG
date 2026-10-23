@@ -22,9 +22,8 @@ PLOTS = Path("output/plots/ae_base")
 SEED = 42
 THRESHOLD_QUANTILE = 0.95
 EPOCHS = 80
-HIDDEN_LAYERS = (16, 8, 16)
+HIDDEN_LAYERS = (8, 4, 8)
 ETA_ME = "Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta.parquet"
-HLT_SHAPE_PRIOR_COUNT = 10
 
 
 def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
@@ -44,7 +43,7 @@ def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
         entries = frame.entries.to_numpy(dtype=np.float32)
         if not np.isfinite(entries).all() or (entries < 0).any():
             raise ValueError(f"Invalid entries: {folder / name}")
-        counts = np.stack(frame.data.to_numpy()).astype(np.float32)
+        counts = np.stack(frame.data.to_numpy()).astype(np.float64)
         if not np.isfinite(counts).all() or (counts < 0).any():
             raise ValueError(f"Invalid histogram contents: {folder / name}")
         if frame.x_min.nunique() != 1 or frame.x_max.nunique() != 1:
@@ -54,27 +53,20 @@ def load_run(dataset: str, run: int, me_files: list[str]) -> pd.DataFrame:
             raise ValueError(f"Invalid axis: {folder / name}")
         edges = np.linspace(low, high, counts.shape[1] + 1, dtype=np.float32)
         centers = (edges[:-1] + edges[1:]) / 2
-        positions = np.abs(centers) / max(abs(low), abs(high)) if name.endswith("__GlbMuon_Glb_eta.parquet") else (centers - low) / (high - low)
+        positions = (centers - low) / (high - low)
+        if name.endswith("__GlbMuon_Glb_eta.parquet"):
+            positions = np.abs(centers) / max(abs(low), abs(high))
         total = counts.sum(axis=1)
-        shape_mean = np.divide(
-            counts @ positions, total, out=np.zeros(len(total), dtype=np.float32), where=total > 0
-        )
+        weights = np.divide(counts, total[:, None], out=np.zeros_like(counts), where=total[:, None] > 0)
+        mean = weights @ positions
+        std = np.sqrt((weights * (positions - mean[:, None])**2).sum(axis=1))
         stem = name.removesuffix(".parquet")
-        result[f"{stem}__log_entries"] = np.log1p(entries)
-        result[f"{stem}__shape_mean"] = shape_mean
-        if name.startswith("Muons__MuonRecoOneHLT__"):
-            result[f"{stem}__bin_count"] = total
+        result[f"{stem}__entries"] = entries
+        result[f"{stem}__mean"] = mean
+        result[f"{stem}__std"] = std
         if name == ETA_ME:
             result["eta_entries"] = entries
     return result
-
-
-def shrink_hlt_shapes(data: pd.DataFrame, priors: dict[str, float], prior_count: int) -> None:
-    """Apply the saved Good-train shape priors before scaling or scoring."""
-    for feature, prior in priors.items():
-        count = data[feature.replace("__shape_mean", "__bin_count")].to_numpy(dtype=np.float64)
-        shape = data[feature].to_numpy(dtype=np.float64)
-        data[feature] = (count * shape + prior_count * prior) / (count + prior_count)
 
 
 def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path,
@@ -199,20 +191,10 @@ def main() -> None:
             print(f"Loaded {index}/{len(manifest)} runs", flush=True)
     data = pd.concat(frames, ignore_index=True)
     train_mask = data.split == "train"
-    features = [f"{name.removesuffix('.parquet')}__{kind}" for name in me_files for kind in ("log_entries", "shape_mean")]
-    # Preserve the raw Good-train scale so shrinkage is not undone by refitting it.
+    model_mes = [name for name in me_files if not name.startswith("Muons__MuonRecoOneHLT__")]
+    features = [f"{name.removesuffix('.parquet')}__{kind}" for name in model_mes
+                for kind in ("mean", "std")]
     scaler = StandardScaler().fit(data.loc[train_mask, features].to_numpy(dtype=np.float32))
-    shape_priors = {}
-    for name in me_files:
-        if not name.startswith("Muons__MuonRecoOneHLT__"):
-            continue
-        stem = name.removesuffix(".parquet")
-        feature, count_name = f"{stem}__shape_mean", f"{stem}__bin_count"
-        count = data[count_name].to_numpy(dtype=np.float64)
-        shape = data[feature].to_numpy(dtype=np.float64)
-        prior = np.average(shape[train_mask], weights=count[train_mask])
-        shape_priors[feature] = float(prior)
-    shrink_hlt_shapes(data, shape_priors, HLT_SHAPE_PRIOR_COUNT)
     x_train = scaler.transform(data.loc[data.split == "train", features].to_numpy(dtype=np.float32))
     x_val = scaler.transform(data.loc[data.split == "validation", features].to_numpy(dtype=np.float32))
     model = MLPRegressor(hidden_layer_sizes=HIDDEN_LAYERS, batch_size=1024, random_state=SEED,
@@ -237,7 +219,6 @@ def main() -> None:
         pickle.dump({"model": model, "scaler": scaler, "threshold": threshold,
                      "features": features, "seed": SEED,
                      "hidden_layer_sizes": HIDDEN_LAYERS,
-                     "hlt_shape_prior_count": HLT_SHAPE_PRIOR_COUNT, "hlt_shape_priors": shape_priors,
                      "train_losses": train_losses, "validation_losses": val_losses,
                      "run_split": {key: sorted(value & set(manifest.run_number)) for key, value in split.items()}}, output)
     groups = {"train_good": scores.split == "train", "validation_good": scores.split == "validation",
@@ -250,10 +231,9 @@ def main() -> None:
         "threshold_quantile": THRESHOLD_QUANTILE,
         "cache_snapshot_promptreco_runs": len(manifest), "catalog_promptreco_runs": expected_runs,
         "runs_with_ls_completeness_below_one": int((manifest.ls_completeness < 1).sum()),
-        "feature_count": len(features), "training_epochs": EPOCHS,
+        "me_count": len(model_mes), "feature_count": len(features), "training_epochs": EPOCHS,
         "hidden_layer_sizes": list(HIDDEN_LAYERS),
-        "hlt_shape_prior_count": HLT_SHAPE_PRIOR_COUNT,
-        "hlt_shape_priors_good_train": shape_priors,
+        "features": "Mean and population std from 8 MEs, excluding MuonRecoOneHLT; entries are diagnostic metadata only; eta uses absolute eta; no low-stat correction; empty histogram mean/std set to zero",
         "training_reconstruction_mse": train_losses[-1],
         "validation_reconstruction_mse": val_losses[-1],
         "threshold": threshold,
@@ -268,8 +248,6 @@ def main() -> None:
     plot_dir.mkdir(parents=True, exist_ok=True)
     for old_plot in plot_dir.glob("*.png"):
         old_plot.unlink()
-    for era, frame in scores.groupby("era"):
-        plot_scores(frame, threshold, era, plot_dir / f"{era}.png")
     for split, name, label in (("train", "train", "Train"),
                                ("validation", "val", "Validation"),
                                ("test", "test", "Test")):
@@ -278,7 +256,7 @@ def main() -> None:
                                    (396727, 396763), (398902, 398902)) if split == "test" else ())
     plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
-    print(f"Saved {len(scores)} LS scores, metrics, model, and {scores.era.nunique() + 6} plots in output/")
+    print(f"Saved {len(scores)} LS scores, metrics, model, and 6 plots in output/")
     print(f"Provisional-good test LS flag fraction: {metrics['flagged_ls_fraction_by_group']['test_good']:.3%}")
 
 
