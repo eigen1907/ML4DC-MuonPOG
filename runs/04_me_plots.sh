@@ -20,7 +20,7 @@ The four regions selected from the previous mean-only test plot are marked on [t
 - C (2025F, 1,507 LS): 396727, 396735, 396757, 396763
 - D (2025G, 428 LS): 398902
 
-Raw ME heatmaps show stored bin counts for recorded LS. Single-run plots keep actual LS numbers and missing-LS gaps; region plots concatenate all recorded LS with run-number ticks. AE mean/std/stat region plots retain all LS, including below-threshold and low/zero-stat LS, with run-number ticks. Mean/std plots overlay input and AE output above their difference (input minus output). Mean and std are calculated directly from histogram bin positions normalized to 0–1, without low-stat correction. Empty histograms use mean = std = 0 when no distribution is observed. The two MuonRecoOneHLT MEs are excluded from AE inputs; their raw ME and entries plots remain available. Entries plots show raw statistics for diagnosis only; entries are not AE inputs or part of the anomaly score.
+ME heatmaps concatenate recorded LS with positive stored-bin sums, in run/LS order, without gaps. The Lumisection x axis is a consecutive 1-based nonempty-LS index, not an actual LS ID; ME-specific filtering means indices differ across MEs. Multi-run boundaries follow the retained rows. Each LS is normalized as p_i = n_i / sum(n_i) over all stored in-range bins before display zoom. Entirely empty MEs keep their plot paths with a "No nonempty LS" placeholder. The ME name appears in white at the upper left. This display filtering leaves data and the model unchanged. AE mean/std/stat region plots retain all LS, including below-threshold and low/zero-stat LS, with run-number ticks. Mean/std plots overlay input and AE output above their difference (input minus output). Mean and std are calculated directly from histogram bin positions normalized to 0–1, without low-stat correction. Empty histograms use mean = std = 0 when no distribution is observed. The two MuonRecoOneHLT MEs are excluded from AE inputs; their normalized ME and entries plots remain available. Entries plots show raw statistics for diagnosis only; entries are not AE inputs or part of the anomaly score.
 
 Diff panels use fixed linear ranges: mean ±0.1 and std ±0.02. Up/down triangles indicate residuals beyond the displayed range; the upper panel shows the full input and output values.
 
@@ -54,7 +54,7 @@ for selection in 397332 396153 395723 A B C D; do
   for folder in "${folders[@]}"; do
     files+=("$folder"/Muons__*.parquet)
   done
-  printf '## %s\n\n| ME | Raw ME | Entries (diagnostic) | Mean | Std |\n|---|---|---|---|---|\n' "$label" >> "$index"
+  printf '## %s\n\n| ME | Normalized ME | Entries (diagnostic) | Mean | Std |\n|---|---|---|---|---|\n' "$label" >> "$index"
   if [ "$group" = good ] || [ "$group" = bad ]; then
     uv run --locked python scripts/plot.py --input "${files[@]}"
   else

@@ -1,4 +1,4 @@
-"""Plot raw per-LS histogram contents from cached 1D MEs."""
+"""Plot per-LS normalized histograms from cached 1D MEs."""
 
 import argparse
 from collections import defaultdict
@@ -23,7 +23,6 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     if frame["data"].map(len).nunique() != 1:
         raise SystemExit("Histogram bin counts vary across runs")
     counts = np.stack(frame["data"].to_numpy()).astype(np.float32)
-    ls = frame.ls_number.to_numpy(dtype=int)
     runs = frame.run_number.to_numpy(dtype=int)
     entries = frame.entries.to_numpy(dtype=np.float32)
     x_min, x_max = float(frame.iloc[0].x_min), float(frame.iloc[0].x_max)
@@ -32,6 +31,8 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
         raise SystemExit("Histogram ranges vary across LS; inspect before plotting")
     if not np.isfinite(counts).all() or (counts < 0).any() or not np.isfinite(entries).all() or (entries < 0).any():
         raise SystemExit("Invalid histogram contents or entries")
+    totals = counts.sum(axis=1, keepdims=True)
+    normalized = np.divide(counts, totals, out=np.full_like(counts, np.nan), where=totals > 0)
     run = int(runs[0])
     short_me = str(frame.iloc[0].me).rsplit("/", 1)[-1]
     eras = frame.dataset.map(lambda dataset: str(dataset).split("/")[2].split("-")[0].removeprefix("Run")).unique()
@@ -53,6 +54,8 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
         axis_label = "Muon $p_T$"
     elif short_me.endswith("_phi"):
         axis_label = "Muon $\\phi$"
+    elif short_me == "NumberOfValidRecHitsPerTrack_sta":
+        axis_label = "Valid hits / track"
     if region:
         out = Path("output/plots/mes/good_but_anomaly") / region / f"{input_paths[0].stem}.png"
     else:
@@ -60,37 +63,37 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
 
-    if region:
-        grid = counts
-        x_min_plot, x_max_plot = -0.5, len(frame) - 0.5
-    else:
-        grid = np.full((ls.max() - ls.min() + 1, counts.shape[1]), np.nan)
-        grid[ls - ls.min()] = counts
-        x_min_plot, x_max_plot = ls.min() - 0.5, ls.max() + 0.5
+    # Compress the display only: omit missing and empty LS for this ME.
+    nonempty = totals[:, 0] > 0
+    grid = normalized[nonempty]
+    if not nonempty.any():
+        grid = np.full((1, counts.shape[1]), np.nan)
     fig, ax = plt.subplots(figsize=(13.5, 8), layout="constrained")
     image = ax.imshow(
         grid.T,
         origin="lower",
         aspect="auto",
-        extent=(x_min_plot, x_max_plot, x_min, x_max),
+        extent=(0.5, len(grid) + 0.5, x_min, x_max),
         cmap="viridis",
+        interpolation="nearest",
+        vmin=0,
     )
-    if not counts.any():
+    if short_me == "NumberOfValidRecHitsPerTrack_sta":
+        ax.set_ylim(0, 65)
+    if not nonempty.any():
         image.set_clim(0, 1)
-    fig.colorbar(image, ax=ax, label="Bin content")
+        ax.text(0.5, 0.5, "No nonempty LS", transform=ax.transAxes, ha="center", va="center")
+        ax.set_xticks([])
+    fig.colorbar(image, ax=ax, label="Normalized bin content")
+    ax.set(xlabel="Lumisection", ylabel=axis_label)
+    ax.text(0.02, 0.98, short_me, transform=ax.transAxes, ha="left", va="top",
+            color="white", bbox={"facecolor": "black", "alpha": 0.5, "edgecolor": "none"})
     if region:
-        run_numbers, run_sizes = np.unique(runs, return_counts=True)
-        ends = np.cumsum(run_sizes)
-        midpoints = (np.r_[0, ends[:-1]] + ends - 1) / 2
-        targets = np.linspace(0, len(frame) - 1, min(4, len(run_numbers)))
-        tick_ids = np.unique(np.argmin(np.abs(midpoints[:, None] - targets), axis=0))
-        ax.set_xticks(midpoints[tick_ids], run_numbers[tick_ids])
-        for boundary in ends[:-1]:
-            ax.axvline(boundary - 0.5, color="white", linewidth=0.6, alpha=0.8)
-        ax.set(xlabel="Run number", ylabel=axis_label)
+        _, run_sizes = np.unique(runs[nonempty], return_counts=True)
+        for boundary in np.cumsum(run_sizes)[:-1]:
+            ax.axvline(boundary + 0.5, color="white", linewidth=0.6, alpha=0.8)
         rlabel = f"Group {region} (Good), {era}"
     else:
-        ax.set(xlabel="Lumisection", ylabel=axis_label)
         rlabel = f"Run {run} ({status}), {era}"
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
                   rlabel=rlabel)
