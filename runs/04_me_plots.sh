@@ -22,6 +22,8 @@ The four regions selected from the previous mean-only test plot are marked on [t
 
 ME heatmaps concatenate recorded LS with positive stored-bin sums, in run/LS order, without gaps. The Lumisection x axis is a consecutive 1-based nonempty-LS index, not an actual LS ID; ME-specific filtering means indices differ across MEs. Multi-run boundaries follow the retained rows. Each LS is normalized as p_i = n_i / sum(n_i) over all stored in-range bins before display zoom. Entirely empty MEs keep their plot paths with a "No nonempty LS" placeholder. The ME name appears in white at the upper left. This display filtering leaves data and the model unchanged. AE mean/std/stat region plots retain all LS, including below-threshold and low/zero-stat LS, with run-number ticks. Mean/std plots overlay input and AE output above their difference (input minus output). Mean and std are calculated directly from histogram bin positions normalized to 0–1, without low-stat correction. Empty histograms use mean = std = 0 when no distribution is observed. The two MuonRecoOneHLT MEs are excluded from AE inputs; their normalized ME and entries plots remain available. Entries plots show raw statistics for diagnosis only; entries are not AE inputs or part of the anomaly score.
 
+Each case also has `entries.png`: six colored step histograms overlaid on shared geometric bins with a separate zero bin. Entries use a symlog x axis (linear threshold 1, upper limit 10^6); LS counts use a linear y axis. All recorded LS, including zero-entry LS, contribute. Legend labels are GlbMuon, GlbMuonOneHLT, GlbGlbMuonHM, GlbGlbMuonLM, GlbMuonHits, and StaMuonHits, each followed by `μ = x,xxx.x`, the arithmetic entries/LS mean including zeros. Exact per-(run, LS) entries vectors are deduplicated: Analyzer eta/phi/pt and Isolation share one histogram; OneHLT eta/pt share another. Entries count ME fills/objects; they need not equal event counts or the sum of stored bins. These diagnostic plots leave the model unchanged.
+
 Diff panels use fixed linear ranges: mean ±0.1 and std ±0.02. Up/down triangles indicate residuals beyond the displayed range; the upper panel shows the full input and output values.
 
 EOF
@@ -57,7 +59,7 @@ for selection in 397332 396153 395723 397765 A B C D; do
   for folder in "${folders[@]}"; do
     files+=("$folder"/Muons__*.parquet)
   done
-  printf '## %s\n\n| ME | Normalized ME | Entries (diagnostic) | Mean | Std |\n|---|---|---|---|---|\n' "$label" >> "$index"
+  printf '## %s\n\n[Entries distribution](../mes/%s/entries.png)\n\n| ME | Normalized ME | Entries (diagnostic) | Mean | Std |\n|---|---|---|---|---|\n' "$label" "$relative" >> "$index"
   if [ "$group" = good ] || [ "$group" = bad ]; then
     uv run --locked python scripts/plot.py --input "${files[@]}"
   else

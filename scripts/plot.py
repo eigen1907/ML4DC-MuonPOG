@@ -1,4 +1,4 @@
-"""Plot per-LS normalized histograms from cached 1D MEs."""
+"""Plot normalized ME heatmaps and per-LS entries distributions from cached data."""
 
 import argparse
 from collections import defaultdict
@@ -102,6 +102,59 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     print("Saved", out)
 
 
+def plot_entries(input_paths: list[Path], region: str | None = None) -> None:
+    frame = pd.concat([
+        pd.read_parquet(path, columns=["dataset", "run_number", "ls_number", "me", "entries"])
+        for path in input_paths
+    ], ignore_index=True)
+    table = frame.pivot(index=["run_number", "ls_number"], columns="me", values="entries").sort_index()
+    if not np.isfinite(table.to_numpy()).all() or (table < 0).any().any():
+        raise ValueError("Entries must be nonnegative and cover the same LS for all MEs")
+    groups = []
+    for me in table:
+        values = table[me].to_numpy()
+        if not any(np.array_equal(values, previous) for _, previous in groups):
+            groups.append((me, values))
+
+    run = int(frame.run_number.min())
+    era = frame.dataset.iloc[0].split("/")[2].split("-")[0].removeprefix("Run")
+    label = pd.read_csv("data/run_labels.csv").set_index("run_number").loc[run, "label"]
+    status = "Good" if label == "good" else "Bad"
+    relative = Path("good_but_anomaly") / region if region else Path(status.lower()) / str(run)
+    out = Path("output/plots/mes") / relative / "entries.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    rlabel = f"Group {region}" if region else f"Run {run}"
+    rlabel += f" ({status}), {era}"
+    names = {
+        "relPFIso_R03": "GlbMuon",
+        "GlbMuon_Glb_eta": "GlbMuon",
+        "GlbMuon_Glb_phi": "GlbMuon",
+        "GlbMuon_Glb_pt": "GlbMuon",
+        "GlbGlbMuon_LM": "GlbGlbMuonLM",
+        "GlbGlbMuon_HM": "GlbGlbMuonHM",
+        "NumberOfMeanRecHitsPerTrack_glb": "GlbMuonHits",
+        "NumberOfValidRecHitsPerTrack_sta": "StaMuonHits",
+    }
+    maximum = max(1, max(values.max() for _, values in groups))
+    bins = np.unique(np.r_[-0.5, np.rint(np.geomspace(1, maximum + 1, 60)) - 0.5])
+    hep.style.use("CMS")
+    fig, ax = plt.subplots(figsize=(13.5, 8), layout="constrained")
+    largest = 0
+    for me, values in groups:
+        short_me = me.rsplit("/", 1)[-1]
+        name = "GlbMuonOneHLT" if "/MuonRecoOneHLT/" in me else names.get(short_me, short_me)
+        counts, _, _ = ax.hist(values, bins=bins, histtype="step", linewidth=2,
+                               label=rf"{name} ($\mu$ = {values.mean():,.1f})")
+        largest = max(largest, counts.max())
+    ax.set_xscale("symlog", linthresh=1)
+    ax.set(xlabel="Entries", ylabel="LS", xlim=(bins[0], 1e6), ylim=(0, largest * 1.8))
+    ax.legend(loc="upper left")
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=rlabel)
+    fig.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out}: {len(groups)} unique entries profiles, {len(table)} LS (including zeros)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, nargs="+", required=True, help="Parquet file(s) from fetch.py")
@@ -114,9 +167,14 @@ def main() -> None:
             groups[input_path.stem].append(input_path)
         for input_paths in groups.values():
             plot_me(input_paths, args.region)
+        plot_entries(args.input, args.region)
     else:
+        groups = defaultdict(list)
         for input_path in args.input:
             plot_me([input_path])
+            groups[input_path.parent].append(input_path)
+        for input_paths in groups.values():
+            plot_entries(input_paths)
 
 
 if __name__ == "__main__":
