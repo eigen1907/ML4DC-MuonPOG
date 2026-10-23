@@ -13,7 +13,7 @@ mkdir -p "$(dirname "$index")"
 cat > "$index" <<'EOF'
 # Muons ME and ae_base feature plots
 
-The four regions selected from the previous mean-only test plot are marked on [test.png](test.png):
+The four regions selected from the previous mean-only logarithmic test view are marked on [test_log.png](test_log.png):
 
 - A (2025B, 610 LS): 391550, 391670, 391675, 391677, 391682, 391826, 391906, 391953, 392088, 392090
 - B (2025C, 4,777 LS): 393240

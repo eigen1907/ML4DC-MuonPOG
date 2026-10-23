@@ -24,7 +24,7 @@ The collector writes the DIALS run list to `output/dataset/runs.csv` and one Par
 
 The 16 features are standardized using Good training LS and feed a 16→8→4→8→16 autoencoder (seed 42, 80 epochs). The LS anomaly score is the mean squared reconstruction error of mean/std in standardized feature units. One fixed threshold is set at the 95th percentile of Good validation LS scores.
 
-The experiment saves LS score views as `train.png`, `val.png`, `test.png`, and `2025.png` (all splits), along with `loss.png` and `distributions.png`. It does not make period-specific score plots.
+The experiment saves linear-score views as `train.png`, `val.png`, `test.png`, `2025.png` (all splits), and `distributions.png`, with logarithmic-score counterparts named `*_log.png`. Score views change the y-axis scale; distributions change the x-axis scale and use uniform bins for linear views and geometric bins for log views. Linear anomaly-score axes span 0–5; logarithmic views retain the full range. `loss.png` is unchanged. It does not make period-specific score plots.
 
 `04_me_plots.sh` makes eight plot cases from 20 test runs: standalone Good 397332 and Bad 396153/395723/397765, plus four combined provisional-Good regions A–D from the dense elevated clumps selected on the previous mean-only test plot. A (2025B) combines 10 runs/610 LS, B (2025C) 1/4,777, C (2025F) 4/1,507, and D (2025G) 1/428. Their member runs are listed in the gallery. The 16 selected runs contain 7,322 LS. All AE mean/std/stat plots retain **all** recorded LS in run/LS order, including below-threshold and low/zero-stat LS. Their `Lumisection` x axis is a consecutive 1-based recorded-LS index, not the original LS ID; multi-run boundaries remain marked, without run-number ticks.
 

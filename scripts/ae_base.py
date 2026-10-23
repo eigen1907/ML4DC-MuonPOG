@@ -112,6 +112,9 @@ def plot_scores(frame: pd.DataFrame, threshold: float, rlabel: str, output: Path
     ])
     ax.legend(handles=handles, ncol=len(handles), frameon=True, facecolor="white", framealpha=0.95)
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=rlabel)
+    fig.savefig(output.with_stem(output.stem + "_log"), dpi=160, bbox_inches="tight")
+    ax.set_yscale("linear")
+    ax.set_ylim(0, 5)
     fig.savefig(output, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
@@ -127,21 +130,26 @@ def plot_diagnostics(scores: pd.DataFrame, train_losses: list[float], val_losses
     fig.savefig(plot_dir / "loss.png", dpi=160, bbox_inches="tight")
     plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
     selected = scores[scores.split == "test"]
-    bins = np.geomspace(selected.anomaly_score.min(), selected.anomaly_score.max(), 60)
     groups = [("Good", selected.label == "good", "#27834b"),
               ("Bad", selected.label != "good", "#c43c3c")]
-    for label, mask, color in groups:
-        values = selected.loc[mask, "anomaly_score"]
-        ax.hist(values, bins=bins, weights=np.full(len(values), 1 / len(values)),
-                histtype="step", linewidth=2, color=color, label=f"{label} ({len(values):,} LS)")
-    ax.axvline(threshold, color="black", linestyle="--", label="Threshold")
-    ax.set(xscale="log", xlabel="Anomaly score", ylabel="Fraction of LS / bin")
-    ax.legend()
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="2025 test")
-    fig.savefig(plot_dir / "distributions.png", dpi=160, bbox_inches="tight")
-    plt.close(fig)
+    for scale in ("log", "linear"):
+        fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
+        bins = (np.geomspace(selected.anomaly_score.min(), selected.anomaly_score.max(), 60)
+                if scale == "log" else np.linspace(0, 5, 60))
+        for label, mask, color in groups:
+            values = selected.loc[mask, "anomaly_score"]
+            ax.hist(values, bins=bins, weights=np.full(len(values), 1 / len(values)),
+                    histtype="step", linewidth=2, color=color, label=f"{label} ({len(values):,} LS)")
+        ax.axvline(threshold, color="black", linestyle="--", label="Threshold")
+        ax.set(xscale=scale, xlabel="Anomaly score", ylabel="Fraction of LS / bin")
+        if scale == "linear":
+            ax.set_xlim(0, 5)
+        ax.legend()
+        hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="2025 test")
+        name = "distributions_log.png" if scale == "log" else "distributions.png"
+        fig.savefig(plot_dir / name, dpi=160, bbox_inches="tight")
+        plt.close(fig)
 
 
 def main() -> None:
@@ -256,7 +264,7 @@ def main() -> None:
                                    (396727, 396763), (398902, 398902)) if split == "test" else ())
     plot_scores(scores, threshold, "2025", plot_dir / "2025.png")
     plot_diagnostics(scores, train_losses, val_losses, threshold, plot_dir)
-    print(f"Saved {len(scores)} LS scores, metrics, model, and 6 plots in output/")
+    print(f"Saved {len(scores)} LS scores, metrics, model, and 11 plots in output/")
     print(f"Provisional-good test LS flag fraction: {metrics['flagged_ls_fraction_by_group']['test_good']:.3%}")
 
 
