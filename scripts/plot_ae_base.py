@@ -46,7 +46,7 @@ def main() -> None:
     features = saved["features"]
     scaled = saved["scaler"].transform(data[features].to_numpy(dtype=np.float32))
     predicted = saved["model"].predict(scaled)
-    x = np.arange(len(data)) if region else data.ls_number.to_numpy()
+    x = np.arange(1, len(data) + 1)
     run = int(data.run_number.iloc[0])
     relative = Path("good_but_anomaly") / args.group if region else Path(args.group) / str(run)
     rlabel = f"Group {args.group}" if region else f"Run {run}"
@@ -54,8 +54,6 @@ def main() -> None:
     if region:
         sizes = data.groupby("run_number", sort=True).size()
         edges = np.r_[0, sizes.to_numpy().cumsum()]
-        midpoints = (edges[:-1] + edges[1:] - 1) / 2
-        ticks = np.unique(np.abs(midpoints[:, None] - np.linspace(0, len(data) - 1, 4)).argmin(axis=0))
     hep.style.use("CMS")
 
     for file in me_files:
@@ -106,11 +104,9 @@ def main() -> None:
                 axes = (ax, diff_ax)
             hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
                           rlabel=rlabel)
-            bottom_ax.set_xlabel("Run number" if region else "Lumisection")
+            bottom_ax.set(xlabel="Lumisection", xlim=(0.5, len(data) + 0.5))
             if region:
-                bottom_ax.set_xlim(-0.5, len(data) - 0.5)
-                bottom_ax.set_xticks(midpoints[ticks], sizes.index.to_numpy()[ticks].astype(str))
-                for boundary in edges[1:-1] - 0.5:
+                for boundary in edges[1:-1] + 0.5:
                     for panel in axes:
                         panel.axvline(boundary, color="gray", linewidth=0.5, alpha=0.4, zorder=0)
             fig.savefig(out, dpi=160, bbox_inches="tight")
