@@ -26,7 +26,7 @@ Diff panels use fixed linear ranges: mean ±0.1 and std ±0.02. Up/down triangle
 
 EOF
 
-for selection in 397332 396153 395723 A B C D; do
+for selection in 397332 396153 395723 397765 A B C D; do
   case "$selection" in
     397332)
       label='Good — Run 397332'; group=good; relative=good/397332
@@ -37,6 +37,9 @@ for selection in 397332 396153 395723 A B C D; do
     395723)
       label='Bad — Run 395723'; group=bad; relative=bad/395723
       folders=(output/dataset/raw/Muon0__Run2025D-PromptReco-v1__DQMIO/395723) ;;
+    397765)
+      label='Bad — Run 397765'; group=bad; relative=bad/397765
+      folders=(output/dataset/raw/Muon0__Run2025F-PromptReco-v2__DQMIO/397765) ;;
     A)
       label='Good test — Region A'; group=A; relative=good_but_anomaly/A
       folders=(output/dataset/raw/Muon0__Run2025B-PromptReco-v1__DQMIO/{391550,391670,391675,391677,391682,391826,391906,391953,392088,392090}) ;;
