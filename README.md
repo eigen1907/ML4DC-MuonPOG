@@ -58,6 +58,9 @@ With the current RR snapshot, 2026 has no Muon Bad labels: it tests stability on
 Good runs and allows inspection of Unknown runs, not Bad detection efficiency.
 Multiple plot inputs must share the checkpoint, threshold and training signature;
 only Test rows are included, and a separate `--output` directory is required.
+Each model also gets `confusion_matrix.png`: DCS-selected, finite-score Good/Bad
+Test LS, with counts and row percentages at the fixed threshold. LS inherit their
+RR run labels; Unknown/unscored LS are excluded. This is not LS-level ground truth.
 
 DIALS collection uses the `muo` workspace and caches available per-LS `Muons/` 1D MEs from every matching Muon0 processing version. Availability is determined by the live listing; requesting a year does not imply that it is present. Existing valid Parquet files are reused.
 

@@ -120,6 +120,31 @@ def _distribution(frame, threshold, path, log, *, label="Test"):
     save(fig, path)
 
 
+def confusion_view(frame, threshold, path, *, label="Test"):
+    """LS counts against RR run labels; Unknown and unscored LS are excluded."""
+    values = frame.anomaly_score.to_numpy(dtype=float, na_value=np.nan)
+    selected = np.isfinite(values) & frame.label.isin(("good", "bad")).to_numpy()
+    actual = frame.loc[selected, "label"].eq("bad").to_numpy(dtype=int)
+    predicted = (values[selected] > threshold).astype(int)
+    counts = np.bincount(2 * actual + predicted, minlength=4).reshape(2, 2)
+    totals = counts.sum(axis=1, keepdims=True)
+    fractions = np.divide(counts, totals, out=np.zeros((2, 2)), where=totals > 0)
+    fig, ax = plt.subplots(figsize=(11, 9), layout="constrained")
+    artist = ax.imshow(fractions, cmap="Blues", vmin=0, vmax=1)
+    fig.colorbar(artist, ax=ax, label="Row fraction")
+    for row in range(2):
+        for column in range(2):
+            percent = f"{fractions[row, column]:.1%}" if totals[row, 0] else "n/a"
+            ax.text(column, row, f"{counts[row, column]:,}\n{percent}", ha="center", va="center",
+                    color="white" if fractions[row, column] > .5 else "black")
+    ax.set(xticks=[0, 1], xticklabels=["Not flagged", "Flagged"], xlabel="LS prediction",
+           yticks=[0, 1], yticklabels=["Good", "Bad"], ylabel="RR run label")
+    ax.tick_params(which="both", length=0)
+    fig.supxlabel("LS inherit RR run labels")
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
+    save(fig, path)
+
+
 def plot_stage(scores, history, threshold, folder):
     """Write test views and, when supplied, one training/validation loss curve."""
     hep.style.use("CMS")
@@ -131,6 +156,7 @@ def plot_stage(scores, history, threshold, folder):
         suffix = "_log" if log else ""
         score_view(test, threshold, folder / f"test{suffix}.png", label=test_label, log=log)
         _distribution(test, threshold, folder / f"distributions{suffix}.png", log, label=test_label)
+    confusion_view(test, threshold, folder / "confusion_matrix.png", label=test_label)
     if history is not None:
         fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
         for key, label in (("train", "Train"), ("validation", "Validation")):
