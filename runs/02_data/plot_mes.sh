@@ -2,4 +2,4 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
-uv run --locked python scripts/plot.py "$@"
+uv run --locked python -m scripts.plotting.mes "$@"

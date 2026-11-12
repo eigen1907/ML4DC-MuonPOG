@@ -8,7 +8,7 @@ from matplotlib.patches import Patch
 import mplhep as hep
 import numpy as np
 
-from config import IDS, REGIONS
+from scripts.config import IDS, REGIONS
 
 
 BLUE, GREEN, RED, GREY = "#1769c2", "#cde8d1", "#f3bcbc", "#e0e0e0"

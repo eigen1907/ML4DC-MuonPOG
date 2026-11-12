@@ -9,8 +9,8 @@ bash runs/01_metadata/dcs.sh
 bash runs/01_metadata/rr.sh --years 2025        # CERN Kerberos/OTP
 bash runs/01_metadata/oms.sh --runs 393240 396153 397332
 bash runs/02_data/plot_mes.sh
-bash runs/03_models/study.sh --plots-only      # redraw saved results
-bash runs/03_models/study.sh                   # fit or reuse compatible checkpoints
+bash runs/03_models/run.sh --plots-only      # redraw saved results
+bash runs/03_models/run.sh                   # fit or reuse compatible checkpoints
 ```
 
 Metadata recipes use `.venv-metadata` with only acquisition dependencies. OMS uses CERN device login; RR needs a Kerberos ticket and may prompt for OTP. Authentication caches stay outside the repository. Model recipes use `uv` and the existing local histogram cache; they do not download DIALS data.
@@ -27,16 +27,24 @@ output/
   model/<experiment>/             checkpoints
   predict/<experiment>/           scores.parquet and metrics.json
   plots/{mes,<experiment>}/       ME and model plots
-scripts/                          Python code
+scripts/
+  config.py                       paths, ME selection and experiment settings
+  data/
+    metadata.py                   download DCS, OMS and RR JSON
+    dataset.py                    read cached MEs, labels and run splits
+  models/
+    autoencoders.py               model definitions and fitting
+    scoring.py                    residuals, thresholds and LS windows
+    run.py                        run the five experiments or redraw results
+  plotting/
+    mes.py                        ordinary ME and entries plots
+    scores.py                     anomaly-score and training-loss plots
 runs/{01_metadata,02_data,03_models}/
 ```
 
 Dataset directory names encode `/` as `__`. Run lists and LS counts are read from the cache itself; no inventory or run-list file is needed. Generated data and results are ignored by Git.
 
-- `fetch_metadata.py`: DCS, OMS and RR downloads to annual JSON files.
-- `config.py`, `data.py`: study choices, cache discovery, ME loading, labels and splits.
-- `models.py`, `scoring.py`, `study.py`: model fitting, calibration and experiment execution.
-- `plot.py`, `plots.py`: ordinary ME plots and individual model score/loss plots.
+`scripts/data/` handles acquisition and loading; `scripts/models/` handles training and scoring; `scripts/plotting/` handles figures. `config.py` holds shared choices and cache paths. The entry points are `data.metadata`, `models.run` and `plotting.mes`; recipes call them with `python -m scripts.…` from the repository root. The other modules are imported by these entry points.
 
 ## Metadata
 

@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from config import IDS, WINDOW_SIZE
-from models import BATCH_SIZE, residuals
+from scripts.config import IDS, WINDOW_SIZE
+from scripts.models.autoencoders import BATCH_SIZE, residuals
 
 
 QUANTILE = .975

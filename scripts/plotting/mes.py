@@ -9,8 +9,8 @@ import mplhep as hep
 import numpy as np
 import pandas as pd
 
-from config import EXAMPLES, OUT, PROMPT_RECO_PATTERN, REGIONS, cached_runs, dials_folder
-from data import load_run_labels
+from scripts.config import EXAMPLES, OUT, PROMPT_RECO_PATTERN, REGIONS, cached_runs, dials_folder
+from scripts.data.dataset import load_run_labels
 
 
 def plot_me(input_paths: list[Path], region: str | None = None) -> None:

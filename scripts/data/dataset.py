@@ -8,9 +8,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
 
-from config import (DCS_PATH, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
+from scripts.config import (DCS_PATH, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
                     REGIONS, RR_DATA, SEED, SPECIAL_RUNS, cached_runs, dials_folder)
-from fetch_metadata import rr_verdict
 
 
 def _integers(values, dtype, description):
@@ -67,6 +66,19 @@ def select(frame, intervals, phi_entries):
     result["exclusion"] = np.select(
         [~present, ~passed], ["DCS run absent", "DCS LS excluded"], default="Included")
     return result
+
+
+def rr_verdict(counts):
+    """Bad takes precedence; incomplete or absent verdicts stay unknown."""
+    numbers = {key: value for key, value in counts.items() if isinstance(value, (int, float))}
+    if any(value < 0 for value in numbers.values()):
+        return "unknown"
+    if numbers.get("BAD", 0) > 0:
+        return "bad"
+    if numbers.get("GOOD", 0) > 0 and all(value == 0 for key, value in numbers.items() if key != "GOOD"):
+        return "good"
+    return "unknown"
+
 
 
 def load_run_labels():

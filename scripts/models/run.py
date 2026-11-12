@@ -8,12 +8,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-from config import (BASE, BASE_DCS, DM_DCS, DM_WINDOW, EXPERIMENTS, HIST_DCS,
-                    OUT, SEED, SPECIAL_RUNS, WINDOW_SIZE)
-from data import fingerprint, load_dataset, load_run_labels, validation_roles
-from models import HistogramAE, fit_base, fit_histogram, prepare
-from plots import plot_stage
-from scoring import QUANTILE, base_terms, calibrate, histogram_terms, window_mean
+from scripts.config import (BASE, BASE_DCS, DM_DCS, DM_WINDOW, EXPERIMENTS, HIST_DCS,
+                            OUT, SEED, SPECIAL_RUNS, WINDOW_SIZE)
+from scripts.data.dataset import fingerprint, load_dataset, load_run_labels, validation_roles
+from scripts.models.autoencoders import HistogramAE, fit_base, fit_histogram, prepare
+from scripts.plotting.scores import plot_stage
+from scripts.models.scoring import QUANTILE, base_terms, calibrate, histogram_terms, window_mean
 
 STAGES = tuple(EXPERIMENTS)
 MONITOR_LIMIT = 4096

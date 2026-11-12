@@ -8,7 +8,7 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 import torch
 from torch import nn
-from config import SEED
+from scripts.config import SEED
 
 
 HIDDEN_LAYERS = (8, 4, 8)

@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 
-from config import cached_runs
+from scripts.config import cached_runs
 
 DATA = Path("data")
 OMS = "https://cmsoms.cern.ch/agg/api/v1/"
@@ -175,18 +175,6 @@ def rr_session():
     if urlsplit(session.get(RR+"/runs", timeout=30).url).hostname != urlsplit(RR).hostname:
         raise ValueError("Run Registry SSO did not reach the application")
     return session
-
-
-def rr_verdict(counts):
-    """Bad takes precedence; incomplete or absent verdicts stay unknown."""
-    numbers = {key: value for key, value in counts.items() if isinstance(value, (int, float))}
-    if any(value < 0 for value in numbers.values()):
-        return "unknown"
-    if numbers.get("BAD", 0) > 0:
-        return "bad"
-    if numbers.get("GOOD", 0) > 0 and all(value == 0 for key, value in numbers.items() if key != "GOOD"):
-        return "good"
-    return "unknown"
 
 
 def rr_collect_year(year, session):
