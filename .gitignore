@@ -6,8 +6,6 @@ __pycache__/
 *.py[cod]
 
 /data/*
-!/data/run_labels.csv
-!/data/known_bad_reference.csv
 !/data/dcs/
 !/data/oms/
 !/data/rr/
@@ -15,11 +13,11 @@ __pycache__/
 /data/oms/*
 /data/rr/*
 !/data/*/raw/
-!/data/*/processed/
+!/data/*/summary/
 /data/*/raw/*
-/data/*/processed/*
+/data/*/summary/*
 !/data/*/raw/.gitkeep
-!/data/*/processed/.gitkeep
+!/data/*/summary/.gitkeep
 !/data/dcs/raw/2025_reference.json
 !/data/dcs/raw/2025_reference.source.json
 /output/*

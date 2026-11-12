@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 mkdir -p output/logs
 exec > >(tee -a output/logs/study.log) 2>&1
 printf 'running\n' > output/logs/study.status
