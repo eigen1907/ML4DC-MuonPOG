@@ -65,7 +65,7 @@ class StudyTests(unittest.TestCase):
                 path.parent.mkdir(parents=True)
                 frozen = pickle.dumps(historical)
                 path.write_bytes(frozen)
-                metadata = Path('data/metadata'); metadata.mkdir(parents=True)
+                metadata = Path('data'); metadata.mkdir(parents=True)
                 reference = data['frame'].iloc[20:24][IDS].copy()
                 reference['anomaly_score'], reference['threshold'] = 2., 1.
                 reference.to_csv(metadata/'known_bad_reference.csv', index=False)

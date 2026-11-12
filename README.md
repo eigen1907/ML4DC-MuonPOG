@@ -50,7 +50,7 @@ tail -f output/logs/study.log
 - Stage 5 uses up to two later LS as well as two earlier LS. It resets at dataset/run boundaries, LS gaps and DCS-state changes. This is an offline contextual score and can dilute a brief fault; stage 4's instantaneous result is retained.
 - Thresholds are calibrated separately after each score transformation. Scores are not p-values or P(bad). Reused Test results and provisional run labels do not establish LS-level false/true-positive rates.
 
-`data/metadata/known_bad_reference.csv` freezes the **507 previously detected Known Bad LS**. The audit reports all recorded LS and the 504 DCS-pass LS separately, including newly lost or unscored detections. Bad labels never fit models or thresholds.
+`data/known_bad_reference.csv` freezes the **507 previously detected Known Bad LS**. The audit reports all recorded LS and the 504 DCS-pass LS separately, including newly lost or unscored detections. Bad labels never fit models or thresholds.
 
 The completed DCS-only fit uses **198,387 Good training LS** (the frozen stage-01 checkpoint used 211,603 unfiltered LS). Current descriptive Test results:
 
@@ -77,6 +77,8 @@ Stages 02 and 05 also retain all **507 recorded Known Bad LS** before DCS gating
 | `scripts/diagnostics.py` | Flow coverage and Run 393240 count/shape evolution |
 | `scripts/plot.py` | Raw normalized ME heatmaps and entries distributions |
 | `scripts/fetch.py`, `collect.py` | Separate DIALS acquisition |
+| `scripts/fetch_dcs.py`, `fetch_oms.py`, `fetch_rr.py` | Metadata collection and extraction; separate from model inputs |
+| `scripts/metadata.py` | Preserve response bytes and record source/checksum |
 
 The runner calls data loading, model fitting, scoring and plotting directly. ME/feature dimensions follow the selected ME list rather than fixed array sizes; diagnostics look up MEs by name. Edit shared study choices in `config.py`, training settings in `models.py`, and the calibration quantile in `scoring.py`. A–D and representative run numbers are explicit review examples, not model selections.
 
@@ -84,7 +86,9 @@ Existing checkpoints are reused only when the data signature agrees. Histogram c
 
 ```text
 data/run_labels.csv              provisional run labels
-data/metadata/                   DCS snapshot, provenance and frozen detection reference
+data/known_bad_reference.csv     frozen detection reference
+data/{dcs,oms,rr}/raw/           unmodified API response bodies and provenance
+data/{dcs,oms,rr}/processed/     selected metadata tables
 output/dataset/                  unchanged raw Parquet cache and run catalogue
 output/model/{01..05}/           four checkpoints; stage 05 source.json
 output/predict/{01..05}/         LS scores, ME terms, thresholds and protocol signatures
@@ -94,6 +98,39 @@ output/plots/comparison/         aligned five-stage and Known Bad views
 output/plots/mes/                representative raw MEs
 output/{predict,plots}/diagnostics/  flow coverage and Region B trends
 ```
+
+## Metadata
+
+```bash
+bash runs/05_dcs.sh                              # public 2023–2026 snapshots
+bash runs/06_oms.sh --runs 393240 396153 397332    # CERN browser/device login
+bash runs/07_rr.sh --runs 393240 396153 397332     # Kerberos + OTP; use lxplus
+```
+
+The recipes use an isolated `.venv-metadata` with uv-managed Python and only the metadata dependencies; the ML environment is untouched. Run the RR recipe from a checkout on a host with a valid CERN Kerberos ticket (`klist -s`); it prompts for OTP when needed. Credentials stay in the user's authentication cache, outside the repository. OMS and RR require explicit run numbers, and pagination retrieves all results for those runs. No DIALS request is made by these recipes.
+
+Each source separates raw responses from extracted tables:
+
+```text
+data/dcs/raw/<year>.json                 complete public JSON, unchanged bytes
+data/dcs/processed/<year>.parquet         run, first_ls, last_ls (inclusive)
+data/oms/raw/<run>/                      complete run/fill/LS response pages
+data/oms/processed/<run>.parquet          selected LS fields joined to run/fill metadata
+data/rr/raw/<run>/                       all RR dataset pages and component responses
+data/rr/processed/<run>.parquet           Muon start/end/status/comment/cause per RR dataset
+```
+
+Raw means the HTTP response body after transport decompression, with no JSON reformatting or field selection. Source records retain URLs, queries and SHA256 checksums, never authentication headers. Processed tables preserve missing values and original units; RR statuses such as `NOTSET` remain unchanged. RR bounds stay as returned and are not expanded. Offline extraction requires no login: add `--offline` to any recipe after collecting its raw files.
+
+OMS includes per-LS luminosity, pile-up, readiness bits and fill bunch counts. Its `online_cmssw_version` describes online running, not offline PromptReco provenance. RR keeps separate RR datasets; select the relevant offline dataset when using its labels. Public DCS JSONs represent tracker readiness, while Muon readiness bits are available separately in OMS. These collected tables do not change training or provisional run labels.
+
+The existing study still reads the byte-preserved `data/dcs/raw/2025_reference.json`. Downloading a newer DCS snapshot does not change that fixed model selection. Generated raw/processed metadata is ignored by Git; the reference, its provenance, scripts and empty directory placeholders are versioned.
+
+## Muon DQMIO production status
+
+Muon0 AOD datasets exist for 2023–2026; the inspected global DBS catalogue has no full RECO tier, and RAW-RECO entries are skims. The catalogue and producer release/Global Tag records are under `output/dataset/catalogue/`. DQMIO production has not run yet.
+
+An AOD-compatible Muon DQM sequence can produce DQMIO. Reproducing **every** original Muons 1D/2D ME remains unverified because some analyzers need products or hit references missing from AOD. The next step is one AOD file's product/reference check and a short discovery job. Enumerate the actual booked `Muons/` paths, then save those paths per LS; a literal `Muons/*` is not a supported whitelist wildcard. Validate ME coverage and noncumulative contents across at least two LS before scaling up. Missing inputs may need small producer additions or richer input; a successful job with empty MEs is not complete reproduction.
 
 Plots use consecutive recorded LS positions with run-number ticks; the B diagnostic uses actual lumisection numbers. Each score is displayed divided by its own threshold. Linear views show 0–5 and `_log` views use a log scale. Fonts use the CMS style defaults and figures have no titles.
 
