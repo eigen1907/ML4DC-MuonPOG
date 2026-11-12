@@ -28,23 +28,25 @@ One entry point: `scripts/fetch_metadata.py dcs|oms|rr`.
 
 ```text
 data/{dcs,oms,rr}/
-  raw/       original API response bytes and source/checksum records
-  summary/   small CSV tables for inspection and analysis
+  raw/<year>.json       annual API data
+  summary/<year>.csv    annual table for inspection and analysis
 ```
 
 | Source | Summary contents |
 |---|---|
 | DCS | Run and inclusive first/last LS of tracker-ready intervals |
-| OMS | Run/LS/fill, time, luminosity, pile-up, stable beams, CMS active, colliding bunches and Muon readiness bits |
-| RR | PromptReco Muon Good/Bad/unknown run labels; optional LS ranges and comments |
+| OMS | One row per LS: run/fill, time, LS luminosity, pile-up, stable beams, CMS active, colliding bunches and Muon readiness bits |
+| RR | One row per run and one column per main component: good/bad/unknown |
 
-Raw responses retain all returned fields so nothing is lost. Summaries select only the fields above, without scaling, unit conversion or feature engineering. RR no longer downloads detailed online/Express component tables. Public DCS JSONs describe tracker readiness; Muon readiness bits come separately from OMS.
+OMS reads LS data and fill bunch counts; the unused run endpoint is no longer queried. Fill responses are stored once per year and joined by each LS's fill number. Only `*_per_lumisection` luminosity fields enter the CSV; plain luminosity fields can be cumulative. New OMS requests select the required attributes through the documented API `fields` parameter.
 
-RR defaults to a compact yearly query (`--years 2025`) and builds `data/rr/summary/runs.csv`. Explicit `--runs` fetches LS-range detail. OMS accepts `--runs`; otherwise it starts from the RR run list and uses the cached Muon0 catalogue to restrict it when available. Missing/unavailable runs are reported and skipped. Add `--offline` to rebuild summaries from downloaded raw files without login.
+OMS and RR raw JSONs combine API responses into one annual file, retaining their returned field values; they are merged JSON, not byte-for-byte HTTP archives. Existing migrated OMS data can contain extra fields from earlier queries. There are no source/checksum sidecars or separate reference snapshots. Public DCS JSONs describe tracker readiness; Muon readiness bits come separately from OMS.
 
-Only RR `BAD` becomes `bad`; exclusively `GOOD` becomes `good`. Missing, deleted or unassessed verdicts remain `unknown`. Among the existing 744 cached 2025 runs, the current RR snapshot provides 560 Good and 17 Bad; 167 are unassessed or missing. Unknown runs do not train or calibrate the models. There are no well-known/ambiguous Bad categories or manually maintained label CSVs.
+RR defaults to the yearly PromptReco query (`--years 2025`). Its CSV has run_number plus cms, muon, dt, csc, rpc, gem, tracker_pixel, tracker_strip, tracking, ecal, hcal, hlt, l1t and lumi columns. Any BAD LS makes that component bad; exclusively GOOD makes it good; other or missing states remain unknown. This table supplies run labels, not the locations of bad LS. Model labels use the muon column from the annual CSVs.
 
-The model selection still uses the unchanged `data/dcs/raw/2025_reference.json`. New metadata downloads do not replace that fixed DCS snapshot.
+OMS accepts `--runs`; otherwise it uses the RR run list restricted by the cached Muon0 catalogue when available. Missing runs are skipped. Downloads are combined in memory and written once per year. Add `--offline --years 2025` to rebuild an annual CSV without login. The current OMS 2025 file contains three sampled runs, not the full year. Among the 744 cached 2025 runs, RR provides 560 Good and 17 Bad; 167 are unassessed or missing and do not train or calibrate the models.
+
+The study reads the ordinary `data/dcs/raw/2025.json`. Its bytes match the former reference, so removing the duplicate does not change the DCS selection.
 
 ## Existing model experiments
 
