@@ -9,6 +9,8 @@ import mplhep as hep
 import numpy as np
 import pandas as pd
 
+from config import EXAMPLES, MANIFEST, OUT, PROMPT_RECO_PATTERN, REGIONS, RUN_LABELS, raw_folder
+
 
 def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     frames = [pd.read_parquet(path) for path in input_paths]
@@ -39,7 +41,7 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     if len(eras) != 1:
         raise SystemExit("Expected one era in each plot")
     era = eras[0]
-    labels = pd.read_csv("data/run_labels.csv").set_index("run_number").label
+    labels = pd.read_csv(RUN_LABELS).set_index("run_number").label
     statuses = [{"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}.get(labels.get(number))
                 for number in np.unique(runs)]
     if None in statuses:
@@ -57,9 +59,9 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     elif short_me == "NumberOfValidRecHitsPerTrack_sta":
         axis_label = "Valid hits / track"
     if region:
-        out = Path("output/plots/mes/good_but_anomaly") / region / f"{input_paths[0].stem}.png"
+        out = (OUT/"plots/mes/good_but_anomaly") / region / f"{input_paths[0].stem}.png"
     else:
-        out = Path("output/plots/mes") / status.lower() / str(run) / f"{input_paths[0].stem}.png"
+        out = (OUT/"plots/mes") / status.lower() / str(run) / f"{input_paths[0].stem}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     hep.style.use("CMS")
 
@@ -118,10 +120,10 @@ def plot_entries(input_paths: list[Path], region: str | None = None) -> None:
 
     run = int(frame.run_number.min())
     era = frame.dataset.iloc[0].split("/")[2].split("-")[0].removeprefix("Run")
-    label = pd.read_csv("data/run_labels.csv").set_index("run_number").loc[run, "label"]
+    label = pd.read_csv(RUN_LABELS).set_index("run_number").loc[run, "label"]
     status = "Good" if label == "good" else "Bad"
     relative = Path("good_but_anomaly") / region if region else Path(status.lower()) / str(run)
-    out = Path("output/plots/mes") / relative / "entries.png"
+    out = (OUT/"plots/mes") / relative / "entries.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     rlabel = f"Group {region}" if region else f"Run {run}"
     rlabel += f" ({status}), {era}"
@@ -155,12 +157,40 @@ def plot_entries(input_paths: list[Path], region: str | None = None) -> None:
     print(f"Saved {out}: {len(groups)} unique entries profiles, {len(table)} LS (including zeros)")
 
 
+def plot_examples() -> None:
+    """Draw the fixed representative runs and A–D regions from the cache."""
+    inventory = pd.read_csv(MANIFEST)
+    inventory = inventory[inventory.dataset.str.contains(PROMPT_RECO_PATTERN)]
+    for name, runs in {**EXAMPLES, **REGIONS}.items():
+        files = []
+        for run in runs:
+            rows = inventory[inventory.run_number.eq(run)]
+            if len(rows) != 1:
+                raise ValueError(f"Expected one PromptReco dataset for run {run}")
+            folder = raw_folder(rows.iloc[0].dataset, run)
+            files.extend(sorted(folder.glob("Muons__*.parquet")))
+        if not files:
+            raise ValueError(f"No cached MEs for example {name}")
+        region = name if name in REGIONS else None
+        grouped = defaultdict(list)
+        for path in files:
+            grouped[path.stem].append(path)
+        for paths in grouped.values():
+            plot_me(paths, region)
+        plot_entries(files, region)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, nargs="+", required=True, help="Parquet file(s) from fetch.py")
-    parser.add_argument("--region", choices="ABCD")
+    parser.add_argument("--input", type=Path, nargs="+", help="Cached Parquet file(s); default: fixed review examples")
+    parser.add_argument("--region", choices=tuple(REGIONS))
     args = parser.parse_args()
 
+    if args.input is None:
+        if args.region:
+            parser.error("--region requires --input")
+        plot_examples()
+        return
     if args.region:
         groups = defaultdict(list)
         for input_path in args.input:

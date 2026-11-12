@@ -1,21 +1,17 @@
 """Fetch one Muons/ histogram for one DIALS dataset and run."""
 
 import argparse
-from pathlib import Path
 
 from cmsdials import Dials
 from cmsdials.auth.bearer import Credentials
 from cmsdials.filters import LumisectionHistogram1DFilters
 
+from config import raw_folder
+
 
 def fetch_one(dials: Dials, dataset: str, run: int, me: str) -> bool | None:
     """Return True if saved, False if cached, or None if no rows exist."""
-    output = (
-        Path("output/dataset/raw")
-        / dataset.strip("/").replace("/", "__")
-        / str(run)
-        / (me.replace("/", "__") + ".parquet")
-    )
+    output = raw_folder(dataset, run) / (me.replace("/", "__") + ".parquet")
     if output.exists():
         return False
 

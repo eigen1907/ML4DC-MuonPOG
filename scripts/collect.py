@@ -1,12 +1,12 @@
-"""Download 2025 Muon0 data, excluding non-PromptReco 2025G test datasets."""
+"""Download 2025 Muon0 data; keep only PromptReco-v1 for 2025G."""
 
 import csv
-from pathlib import Path
 
 from cmsdials import Dials
 from cmsdials.auth.bearer import Credentials
 from cmsdials.filters import RunFilters
 
+from config import MANIFEST
 from fetch import fetch_one
 
 
@@ -34,8 +34,8 @@ def main() -> None:
     if not runs or not mes:
         raise RuntimeError("No matching runs or Muons/ 1D MEs")
 
-    Path("output/dataset").mkdir(parents=True, exist_ok=True)
-    with Path("output/dataset/runs.csv").open("w", newline="") as output:
+    MANIFEST.parent.mkdir(parents=True, exist_ok=True)
+    with MANIFEST.open("w", newline="") as output:
         writer = csv.writer(output)
         writer.writerow(["dataset", "run_number", "ls_count", "ls_completeness"])
         writer.writerows(
