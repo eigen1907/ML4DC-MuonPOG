@@ -44,18 +44,6 @@ def _limits(values):
     return positive.min() * .8, positive.max() * 1.25
 
 
-def _notes(values, log):
-    notes = []
-    missing = np.count_nonzero(~np.isfinite(values))
-    if missing:
-        notes.append(f"{missing:,} unscored LS")
-    if log and (values == 0).any():
-        notes.append(f"{np.count_nonzero(values == 0):,} LS at zero")
-    if not log and (values > 5).any():
-        notes.append(f"{np.count_nonzero(values > 5):,} LS above 5")
-    return "; ".join(notes)
-
-
 def _axis(ax, frame, values, *, log=False):
     runs, positions = [], []
     for run, group in frame.groupby("run_number", sort=False):
@@ -68,26 +56,22 @@ def _axis(ax, frame, values, *, log=False):
     for status, color in LS_COLORS.items():
         selected = visible & frame.label.eq(status).to_numpy()
         ax.scatter(np.flatnonzero(selected), values[selected], s=9, color=color,
-                   alpha=.9, linewidths=0, rasterized=True, label=f"{status.title()} LS")
+                   alpha=.9, linewidths=0, rasterized=True, label=status.title())
     ax.axhline(1, color="black", linestyle="--", label="Threshold")
     if runs:
-        # Short runs remain visible, but nearby run labels must not overlap.
-        gap = len(frame) / 20
+        # Use a few well-spaced run ticks while keeping consecutive LS positions.
+        gap = len(frame) / 8
         ticks = [0]
         for index in range(1, len(runs) - 1):
             if positions[index] - positions[ticks[-1]] >= gap and positions[-1] - positions[index] >= gap:
                 ticks.append(index)
         if len(runs) > 1:
             ticks.append(len(runs) - 1)
-        ax.set_xticks([positions[i] for i in ticks], [str(runs[i]) for i in ticks], rotation=90)
+        ax.set_xticks([positions[i] for i in ticks], [str(runs[i]) for i in ticks])
     ax.tick_params(axis="x", which="both", top=False)
     ax.tick_params(axis="x", which="minor", bottom=False)
-    notes = _notes(values, log)
-    if notes:
-        ax.text(.01, .78, notes, transform=ax.transAxes, va="top",
-                bbox={"facecolor": "white", "edgecolor": "none", "alpha": .9})
     ax.set(xlim=(-.5, max(.5, len(frame) - .5)), ylim=_limits(values) if log else (0, 5),
-           xlabel="Run number", ylabel="Anomaly score / threshold")
+           xlabel="Run", ylabel="Score")
     if log:
         ax.set_yscale("log")
 
@@ -117,13 +101,10 @@ def _distribution(frame, threshold, path, log):
             ax.hist(selected[visible], bins=bins, weights=np.full(visible.sum(), 1 / scored.sum()),
                     histtype="step", linewidth=2, color=color, label=label)
     ax.axvline(1, color="black", linestyle="--", label="Threshold")
-    ax.set(xlabel="Anomaly score / threshold", ylabel="Fraction of scored LS / bin", xlim=limits)
+    ax.set(xlabel="Score", ylabel="Fraction", xlim=limits)
     if log:
         ax.set_xscale("log")
     ax.legend()
-    notes = _notes(values, log)
-    if notes:
-        fig.supxlabel(notes)
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="Test")
     save(fig, path)
 
@@ -144,9 +125,11 @@ def plot_stage(scores, history, threshold, folder):
             ax.plot(np.arange(1, len(values) + 1), values, label=label)
         if history.get("best_epoch"):
             ax.axvline(history["best_epoch"], color="black", linestyle="--", label="Best epoch")
-        ax.set(xlabel="Epoch", ylabel=history.get("loss", "Loss"))
+        ax.set(xlabel="Epoch", ylabel="Loss")
         ax.legend()
-        hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="2025")
+        source = history.get("source_model")
+        label = f"Shared with {source.split('_', 1)[0]}" if source else "2025"
+        hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
         save(fig, folder / "loss.png")
 
 
@@ -167,7 +150,7 @@ def history_for(checkpoint):
 
     spec, saved, _ = load_checkpoint(checkpoint)
     if spec.KIND == "window":
-        return None
+        return dict(saved["history"], source_model=saved["source_model"])
     if spec.KIND == "feature":
         return dict(train=saved["train_losses"], validation=saved["validation_losses"],
                     loss="Feature MSE")

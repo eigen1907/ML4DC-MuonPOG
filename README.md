@@ -10,7 +10,7 @@ Cached MEs + metadata → preprocessing → train → checkpoint → predict →
 
 Training saves the model, fitted scaling and a fixed Good-calibration threshold. Prediction uses that checkpoint without fitting or recalibrating. Plotting reads saved predictions independently.
 
-Test plots color LS points by the run's Good/Bad/Unknown assessment. Points follow consecutive LS, while the x-axis shows run numbers with crowded labels omitted. Thin lines mark every run boundary.
+Test plots color LS points by the run's Good/Bad/Unknown assessment. Points follow consecutive LS, with a few horizontal Run ticks. Score means anomaly score divided by the fixed threshold; the threshold line is therefore 1. Thin lines mark every run boundary.
 
 ```bash
 # Optional metadata updates; no DIALS download
@@ -32,7 +32,7 @@ bash runs/plotting/scores.sh --input output/predict/03_ae_dm_k1
 
 `runs/train.sh MODEL [OPTIONS]` takes a model module basename, such as `model_03_ae_dm_k1`, and forwards `--data`, `--output` and `--source` to training. `runs/predict.sh` takes `CHECKPOINT DATA [OUTPUT]`. The score plotter accepts optional `--checkpoint` and `--output`; it finds the recorded checkpoint automatically when available.
 
-Stage 04 uses Stage 03 weights and calibrates the window score; it does not train another network:
+Stage 04 uses Stage 03 weights and calibrates the window score; it does not train another network. Its `loss.png` shows the shared Stage 03 history:
 
 ```bash
 bash runs/train.sh model_04_ae_dm_k1_weighted_window \
