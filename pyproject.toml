@@ -21,3 +21,4 @@ package = false
 [dependency-groups]
 metadata = ["requests", "tsgauth==0.12.0", "truststore"]
 kerberos = ["tsgauth[kerb]==0.12.0"]
+dials = ["cmsdials==2.2.0", "pandas", "pyarrow", "truststore"]

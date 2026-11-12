@@ -13,33 +13,42 @@ Training saves the model, fitted scaling and a fixed Good-calibration threshold.
 Test plots color LS points by the run's Good/Bad/Unknown assessment. Points follow consecutive LS, with a few horizontal Run ticks. Score means anomaly score divided by the fixed threshold; the threshold line is therefore 1. Thin lines mark every run boundary.
 
 ```bash
-# Optional metadata updates; no DIALS download
-bash runs/data/dcs.sh --years 2025
-bash runs/data/rr.sh --years 2025                 # CERN Kerberos/OTP
+# Check DIALS availability without downloading histograms
+bash runs/data/dials.sh --years 2024 2025 2026 --list-only
+
+# Fetch one run first, or all available Muon0 processing versions
+bash runs/data/dials.sh --years 2025 --run 397332
+bash runs/data/dials.sh --years 2024 2025 2026
+
+# Annual metadata; OMS remains a bounded sample
+bash runs/data/dcs.sh --years 2024 2025 2026
+bash runs/data/rr.sh --years 2024 2025 2026       # CERN Kerberos/OTP
 bash runs/data/oms.sh --runs 393240 396153 397332  # CERN device login
 
 # Inspect cached histograms
 bash runs/plotting/mes.sh
 
 # Train one experiment into a new directory, then predict and plot
-bash runs/train.sh model_03_ae_dm_k1 --output output/model/dm_rr
-bash runs/predict.sh output/model/dm_rr data/dials output/predict/dm_rr
+bash runs/train.sh model_03_ae_dm_k1 --years 2025 --output output/model/dm_rr
+bash runs/predict.sh output/model/dm_rr data/dials output/predict/dm_rr --years 2025
 bash runs/plotting/scores.sh --input output/predict/dm_rr
 
 # Redraw an existing result without training or prediction
 bash runs/plotting/scores.sh --input output/predict/03_ae_dm_k1
 ```
 
-`runs/train.sh MODEL [OPTIONS]` takes a model module basename, such as `model_03_ae_dm_k1`, and forwards `--data`, `--output` and `--source` to training. `runs/predict.sh` takes `CHECKPOINT DATA [OUTPUT]`. The score plotter accepts optional `--checkpoint` and `--output`; it finds the recorded checkpoint automatically when available.
+DIALS collection uses the `muo` workspace and caches available per-LS `Muons/` 1D MEs from every matching Muon0 processing version. Availability is determined by the live listing; requesting a year does not imply that it is present. Existing valid Parquet files are reused.
+
+`runs/train.sh MODEL [OPTIONS]` and `runs/predict.sh CHECKPOINT DATA [OUTPUT] [OPTIONS]` forward options such as `--years 2024 2025 2026`. Both use all cached years when `--years` is omitted. The score plotter accepts optional `--checkpoint` and `--output`; it finds the recorded checkpoint automatically when available.
 
 Stage 04 uses Stage 03 weights and calibrates the window score; it does not train another network. Its `loss.png` shows the shared Stage 03 history:
 
 ```bash
 bash runs/train.sh model_04_ae_dm_k1_weighted_window \
-  --source output/model/dm_rr --output output/model/dm_window_rr
+  --years 2025 --source output/model/dm_rr --output output/model/dm_window_rr
 ```
 
-Metadata recipes use `.venv-metadata`; other recipes use the project environment. Credentials stay outside the repository. Commands run from the repository root through `python -m scripts.…`.
+Metadata recipes use `.venv-metadata`; DIALS collection uses `.venv-dials` and the `dials` dependency group. Model and plotting recipes use the project environment. Credentials stay outside the repository. Commands run from the repository root through `python -m scripts.…`.
 
 ## Structure
 
@@ -47,6 +56,7 @@ Metadata recipes use `.venv-metadata`; other recipes use the project environment
 scripts/
   data/
     metadata.py             download DCS, OMS and RR JSON
+    fetch_dials.py          list and cache available Muon0 histograms
     dials.py                read cached MEs, metadata labels and run splits
   models/
     config.py               paths, MEs and shared study choices
@@ -59,7 +69,7 @@ scripts/
     mes.py                  normalized ME and entries plots
     scores.py               saved anomaly-score and loss plots
 runs/
-  data/                     metadata download recipes
+  data/                     DIALS and metadata download recipes
   train.sh                  MODEL → training/calibrated checkpoint
   predict.sh                checkpoint → predictions
   plotting/                 ME and score plot recipes
@@ -87,12 +97,14 @@ All four experiments use DCS-selected Good training LS, so their names omit the 
 
 Eight MEs are used; OneHLT is excluded. There is no entry cut. Good runs are split 70/15/15% by run with seed 42; Bad and Unknown are test-only. Validation has separate monitoring and calibration runs. The threshold is the 97.5th percentile of finite Good calibration scores. Stage 04 uses future LS and is an offline study.
 
+Collecting more years or MEs does not change these model inputs. Training requires one PromptReco processing per physical run and rejects duplicates, even across different dataset folders. Use a cache containing one processing per run for training; prediction can inspect all cached processing versions. Each selected year requires its annual DCS JSON.
+
 Existing checkpoints, predictions and splits are preserved historical results from provisional labels. Current RR labels can change training splits: incompatible checkpoints are rejected, so use a new output directory for a new fit. Prediction also preserves existing output files. Plotting only updates displayed labels; it retains saved scores, splits and thresholds.
 
 ## Metadata
 
 - **DCS:** public tracker-ready run/LS intervals, preserving the downloaded JSON bytes. These are not Muon certification labels.
-- **OMS:** run/LS, start/end time, delivered/recorded luminosity, pile-up, stable beams and CMS active. The current file contains three sampled runs. OMS is not a model input yet.
-- **RR:** run number, deleted status and quality counts for 14 components. Muon BAD takes precedence; exclusively GOOD gives Good; incomplete, missing or deleted assessments remain Unknown.
+- **OMS:** run/LS, start/end time, delivered/recorded luminosity, pile-up, stable beams and CMS active. Only sampled runs have been collected; extending the DIALS cache does not download OMS automatically. Without `--runs`, OMS selects cached Muon0 runs first, then RR runs if the cache is empty. OMS is not a model input yet.
+- **RR:** run number, `rr_dataset`, deleted status and quality counts for 14 components. Nondeleted PromptReco Collisions takes priority, then Commissioning, then online for missing cached Muon0 runs. Online-only records always remain Unknown for training. Otherwise Muon BAD takes precedence; exclusively GOOD gives Good; incomplete, missing or deleted assessments remain Unknown.
 
 RR labels apply to runs and do not locate bad LS. Test results remain exploratory.
