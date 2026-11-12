@@ -1,5 +1,5 @@
 .DS_Store
-.venv/
+.venv*/
 .uv-cache/
 .cache/
 __pycache__/
@@ -7,11 +7,21 @@ __pycache__/
 
 /data/*
 !/data/run_labels.csv
-!/data/metadata/
-/data/metadata/*
-!/data/metadata/dcs_2025.json
-!/data/metadata/dcs_2025_source.json
-!/data/metadata/known_bad_reference.csv
+!/data/known_bad_reference.csv
+!/data/dcs/
+!/data/oms/
+!/data/rr/
+/data/dcs/*
+/data/oms/*
+/data/rr/*
+!/data/*/raw/
+!/data/*/processed/
+/data/*/raw/*
+/data/*/processed/*
+!/data/*/raw/.gitkeep
+!/data/*/processed/.gitkeep
+!/data/dcs/raw/2025_reference.json
+!/data/dcs/raw/2025_reference.source.json
 /output/*
 !/output/dataset/
 !/output/model/
