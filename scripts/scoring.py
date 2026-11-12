@@ -1,10 +1,10 @@
-"""Shared residuals, fixed Good calibration, LS context and retention audits."""
+"""Shared residuals, fixed Good calibration, LS context and cohort summaries."""
 
 import numpy as np
 import pandas as pd
 import torch
 
-from config import BASE, IDS, REGIONS, SPECIAL_RUNS, WINDOW_SIZE
+from config import IDS, REGIONS, SPECIAL_RUNS, WINDOW_SIZE
 from models import BATCH_SIZE, residuals
 
 
@@ -84,44 +84,6 @@ def require_alignment(frames, frame):
             raise ValueError(f'{name}: split, labels, selection or counts changed')
 
 
-def retention(frames, cuts, baseline=BASE):
-    """Audit all Known Bad LS against one frozen baseline or an explicit union.
-
-    Decisions use score > saved cut before DCS gating. Both all-recorded and
-    DCS-pass scopes are reported; newly unscored protected LS count as lost.
-    No threshold or model is fitted to these labels.
-    """
-    baselines = (baseline,) if isinstance(baseline, str) else tuple(baseline)
-    if (not baselines or not set(baselines).issubset(frames) or set(frames) != set(cuts)
-            or any(not np.isfinite(cut) or cut <= 0 for cut in cuts.values())):
-        raise ValueError('Provide frozen baseline names and a positive cut for every frame')
-    reference = frames[baselines[0]]
-    require_alignment(frames, reference)
-    indexed = {name: values.set_index(IDS) for name, values in frames.items()}
-    known = indexed[baselines[0]]
-    table = known.loc[known.split.eq('test') & known.label.eq('bad_well_known'), ['dcs_pass']].copy()
-    for name, values in indexed.items():
-        scores = values.reindex(table.index).anomaly_score.to_numpy(dtype=float, na_value=np.nan)
-        table[f'{name}__score_over_cut'] = scores / cuts[name]
-        table[f'{name}__scored'] = np.isfinite(scores)
-        table[f'{name}__flag'] = np.isfinite(scores) & (scores > cuts[name])
-    protected = table[[f'{name}__flag' for name in baselines]].any(axis=1)
-    table['previously_detected'] = protected
-    rows = []
-    for scope, selected in [('all_recorded', np.ones(len(table), dtype=bool)),
-                            ('dcs_pass', table.dcs_pass.to_numpy(dtype=bool))]:
-        for name in frames:
-            scored, flagged = table[f'{name}__scored'], table[f'{name}__flag']
-            rows.append(dict(stage=name, scope=scope, recorded_ls=int(selected.sum()),
-                             scored_ls=int((selected & scored).sum()), flagged_ls=int((selected & flagged).sum()),
-                             protected_ls=int((selected & protected).sum()),
-                             retained_ls=int((selected & protected & flagged).sum()),
-                             newly_lost_ls=int((selected & protected & ~flagged).sum()),
-                             recovered_ls=int((selected & ~protected & flagged).sum()),
-                             unscored_ls=int((selected & ~scored).sum())))
-    return pd.DataFrame(rows), table.reset_index()
-
-
 def window_mean(scores):
     """Offline centered five-LS mean; reset at dataset/run/gap/DCS boundaries.
 
@@ -146,8 +108,8 @@ def summarize(scores):
     test = scores.split.eq('test')
     standard = test & scores.label.eq('good') & ~scores.run_number.isin(SPECIAL_RUNS)
     groups = {'test_good_standard': standard,
-              'test_bad_well_known': test & scores.label.eq('bad_well_known'),
-              'test_bad_ambiguous': test & scores.label.eq('bad_ambiguous')}
+              'test_bad': test & scores.label.eq('bad'),
+              'test_unknown': test & scores.label.eq('unknown')}
     groups.update({name: test & scores.run_number.isin(runs) for name, runs in REGIONS.items()})
     for name, low, high in [('N1_10', 0, 10), ('N11_100', 10, 100), ('Ngt100', 100, np.inf)]:
         groups[name] = standard & scores.minimum_positive_N.gt(low) & scores.minimum_positive_N.le(high)

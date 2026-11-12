@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import mplhep as hep
@@ -13,7 +12,7 @@ import pandas as pd
 from config import IDS, REGIONS, SPECIAL_RUNS
 
 
-BLUE, GREEN, RED = "#1769c2", "#cde8d1", "#f3bcbc"
+BLUE, GREEN, RED, GREY = "#1769c2", "#cde8d1", "#f3bcbc", "#e0e0e0"
 COUNT_BINS = (("0", -.5, 0), ("1–10", 0, 10),
               ("11–100", 10, 100), (">100", 100, np.inf))
 
@@ -62,7 +61,7 @@ def _axis(ax, frame, values, *, log=False, regions=False):
     runs, positions = [], []
     for (_, run), group in frame.groupby(["dataset", "run_number"], sort=False):
         first, last = group.index[0], group.index[-1]
-        color = GREEN if group.label.iloc[0] == "good" else RED
+        color = {"good": GREEN, "bad": RED}.get(group.label.iloc[0], GREY)
         ax.axvspan(first - .5, last + .5, color=color, zorder=0)
         runs.append(run)
         positions.append((first + last) / 2)
@@ -94,11 +93,14 @@ def _axis(ax, frame, values, *, log=False, regions=False):
         ax.set_yscale("log")
 
 
-def _handles():
-    return [Patch(facecolor=GREEN, edgecolor="#5a9e68", label="Good"),
+def _handles(unknown=False):
+    handles = [Patch(facecolor=GREEN, edgecolor="#5a9e68", label="Good"),
             Patch(facecolor=RED, edgecolor="#be6868", label="Bad"),
             Line2D([], [], color="black", linestyle="--", label="Threshold"),
             Line2D([], [], color=BLUE, marker="o", linestyle="none", label="LS")]
+    if unknown:
+        handles.append(Patch(facecolor=GREY, edgecolor="grey", label="Unknown"))
+    return handles
 
 
 def score_view(frame, threshold, path, *, label="Test", log=False, regions=False):
@@ -107,7 +109,7 @@ def score_view(frame, threshold, path, *, label="Test", log=False, regions=False
     frame = _ordered(frame)
     fig, ax = plt.subplots(figsize=(11, 6.2), layout="constrained")
     _axis(ax, frame, _values(frame, threshold), log=log, regions=regions)
-    ax.legend(handles=_handles(), loc="upper right", ncol=4)
+    ax.legend(handles=_handles(frame.label.eq("unknown").any()), loc="upper right", ncol=4)
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
     save(fig, path)
 
@@ -118,7 +120,8 @@ def _distribution(frame, threshold, path, log):
     bins = np.geomspace(*limits, 61) if log else np.linspace(*limits, 61)
     fig, ax = plt.subplots(figsize=(9, 6.5), layout="constrained")
     for name, mask, color in (("Good", frame.label.eq("good"), "#27834b"),
-                               ("Bad", frame.label.ne("good"), "#c43c3c")):
+                               ("Bad", frame.label.eq("bad"), "#c43c3c"),
+                               ("Unknown", frame.label.eq("unknown"), "grey")):
         selected = values[mask]
         scored = np.isfinite(selected)
         visible = scored & ((selected > 0) if log else True)
@@ -217,7 +220,8 @@ def plot_comparison(frames, thresholds, folder):
             axes[0].set_ylim(_limits(np.concatenate(list(values.values()))))
         axes[-1].set_xlabel("Run number")
         fig.supylabel("Anomaly score / threshold")
-        fig.legend(handles=_handles(), loc="outside upper center", ncol=4)
+        fig.legend(handles=_handles(any(frame.label.eq("unknown").any() for frame in aligned.values())),
+                   loc="outside upper center", ncol=4)
         hep.cms.label(ax=axes[0], text="Work in Progress", data=True, com=None, rlabel="Test")
         save(fig, folder / ("test_log.png" if log else "test.png"))
     tables = {name: _lowstat_rates(scores, thresholds[name]) for name, scores in aligned.items()}
@@ -237,42 +241,6 @@ def plot_comparison(frames, thresholds, folder):
     ax.legend()
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="Standard Good test")
     save(fig, folder / "lowstats.png")
-
-
-def plot_retention(details, folder):
-    """Show every recorded Known Bad LS, including DCS-off and unscored rows."""
-    hep.style.use("CMS")
-    details = details.sort_values(["run_number", "ls_number", "dataset"]).reset_index(drop=True)
-    stages = [name.removesuffix("__scored") for name in details if name.endswith("__scored")]
-    if details.empty or not stages or details.duplicated(IDS).any():
-        raise ValueError("Expected unique Known Bad LS and model scored/flag columns")
-    values = np.vstack([np.where(~details[f"{name}__scored"].fillna(False), 0,
-                                 np.where(details[f"{name}__flag"].fillna(False), 2, 1))
-                        for name in stages])
-    colors = ["#bdbdbd", "#e88b8b", "#70b47d"]
-    fig, ax = plt.subplots(figsize=(13, max(4, .8 * len(stages) + 2)), layout="constrained")
-    ax.imshow(values, cmap=ListedColormap(colors), vmin=0, vmax=2,
-              aspect="auto", interpolation="nearest")
-    ticks, labels = [], []
-    for (_, run), group in details.groupby(["dataset", "run_number"], sort=False):
-        first, last = group.index[0], group.index[-1]
-        ticks.append((first + last) / 2)
-        labels.append(str(run))
-        if first:
-            ax.axvline(first - .5, color="black", linewidth=.7)
-    excluded = np.flatnonzero(~details.dcs_pass.fillna(False).to_numpy(dtype=bool))
-    for position in excluded:
-        ax.axvspan(position - .5, position + .5, fill=False, edgecolor="black", linestyle=":")
-    ax.set_xticks(ticks, labels, rotation=60, ha="right")
-    ax.set_yticks(np.arange(len(stages)), stages)
-    ax.set(xlabel="Run number", xlim=(-.5, len(details) - .5))
-    fig.legend(handles=[Patch(facecolor=colors[i], label=label) for i, label in
-                        ((2, "Detected"), (1, "Not detected"), (0, "Unscored"))],
-               loc="outside upper center", ncol=3)
-    if len(excluded):
-        fig.supxlabel(f"{len(excluded):,} DCS-off LS retained (outlined)")
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="Known Bad")
-    save(fig, Path(folder) / "known_bad.png")
 
 
 def plot_run_trend(ls, counts, mean_pt, scores, path, label):

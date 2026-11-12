@@ -35,7 +35,7 @@ def synthetic_dataset():
     features = np.column_stack([_moments(h, 0, 3, eta=i == 1) for i, h in enumerate(histograms)])
     frame = pd.DataFrame(dict(dataset=['/Muon0/Run2025B-PromptReco-v1/DQMIO']*28,
         run_number=runs, ls_number=list(range(1, 9))+list(range(1, 5))*5, era=['2025B']*28,
-        label=['good']*20+['bad_well_known']*4+['bad_ambiguous']*4,
+        label=['good']*20+['bad']*4+['bad']*4,
         split=['train']*8+['validation']*8+['test']*12,
         dcs_pass=[True]*7+[False]+[True]*20, phi_entries=sizes))
     return dict(frame=frame, histograms=histograms, totals=totals, root_entries=totals.copy(),
@@ -44,6 +44,34 @@ def synthetic_dataset():
 
 
 class StudyTests(unittest.TestCase):
+    def test_historical_bad_categories_are_merged_only_when_reading_saved_scores(self):
+        frame = pd.DataFrame({'label': ['good', 'bad_old_one', 'bad_old_two', 'unknown'],
+                              'anomaly_score': [.1, 1., 2., 3.]})
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'scores.parquet'
+            frame.to_parquet(path, index=False)
+            before = path.read_bytes()
+            with patch.object(study, 'load_run_labels', side_effect=FileNotFoundError):
+                loaded = study.read_saved_scores(path)
+            self.assertEqual(loaded.label.tolist(), ['good', 'bad', 'bad', 'unknown'])
+            np.testing.assert_array_equal(loaded.anomaly_score, frame.anomaly_score)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_saved_plots_use_current_rr_and_missing_labels_stay_unknown(self):
+        frame = pd.DataFrame({'run_number': [1, 2, 3, 4], 'label': ['good', 'bad_old_one', 'good', 'good'],
+                              'split': ['train', 'test', 'validation', 'test'],
+                              'anomaly_score': [.1, 1., 2., 3.]})
+        labels = pd.Series({1: 'bad', 2: 'good', 3: 'unknown'}, name='label')
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'scores.parquet'
+            frame.to_parquet(path, index=False)
+            before = path.read_bytes()
+            with patch.object(study, 'load_run_labels', return_value=labels):
+                loaded = study.read_saved_scores(path)
+            self.assertEqual(loaded.label.tolist(), ['bad', 'good', 'unknown', 'unknown'])
+            pd.testing.assert_frame_equal(loaded.drop(columns='label'), frame.drop(columns='label'))
+            self.assertEqual(path.read_bytes(), before)
+
     def test_main_fits_dcs_only_and_writes_five_views_without_changing_historical_model(self):
         data = synthetic_dataset()
         train = np.array([True]*7+[False]*21)
@@ -65,17 +93,13 @@ class StudyTests(unittest.TestCase):
                 path.parent.mkdir(parents=True)
                 frozen = pickle.dumps(historical)
                 path.write_bytes(frozen)
-                metadata = Path('data'); metadata.mkdir(parents=True)
-                reference = data['frame'].iloc[20:24][IDS].copy()
-                reference['anomaly_score'], reference['threshold'] = 2., 1.
-                reference.to_csv(metadata/'known_bad_reference.csv', index=False)
                 stack.enter_context(patch.object(study, 'OUT', Path('output')))
                 stack.enter_context(patch.object(study, 'load_dataset', return_value=data))
                 stack.enter_context(patch.object(study, 'fingerprint', return_value='synthetic-28-ls'))
                 stack.enter_context(patch.object(study, 'validation_roles', return_value={
                     'monitor_runs': [2], 'calibration_runs': [3]}))
                 stack.enter_context(patch.object(sys, 'argv', ['study.py']))
-                stack.enter_context(patch.multiple(study, plot_stage=Mock(), plot_comparison=Mock(), plot_retention=Mock()))
+                stack.enter_context(patch.multiple(study, plot_stage=Mock(), plot_comparison=Mock()))
                 stack.enter_context(patch('diagnostics.write_diagnostics'))
                 for method in ('set_num_threads', 'set_num_interop_threads', 'use_deterministic_algorithms'):
                     stack.enter_context(patch.object(study.torch, method))
@@ -111,8 +135,6 @@ class StudyTests(unittest.TestCase):
                 source = json.loads((Path('output/model')/study.STAGES[4]/'source.json').read_text())
                 self.assertEqual(source['source_model'], study.STAGES[3])
                 self.assertFalse(list((Path('output/model')/study.STAGES[4]).glob('*.pt')))
-                audit = pd.read_csv('output/predict/comparison/known_bad_retention.csv')
-                self.assertTrue((audit.protected_ls == 4).all())
                 protocol = json.loads(Path('output/predict/protocol.json').read_text())
                 self.assertEqual(protocol['training_ls'], 7)
                 self.assertEqual(protocol['calibration_ls'], 4)
@@ -139,6 +161,14 @@ class StudyTests(unittest.TestCase):
                 for name, expected_scores in frames.items():
                     actual = pd.read_parquet(Path('output/predict')/name/'scores.parquet')
                     pd.testing.assert_frame_equal(actual, expected_scores, check_exact=True)
+
+                # A changed RR label/split protocol must not overwrite saved results.
+                saved_scores = {p: p.read_bytes() for p in Path('output/predict').rglob('scores.parquet')}
+                with patch.object(study, 'fingerprint', return_value='changed-rr-labels'):
+                    with self.assertRaisesRegex(ValueError, 'existing results are preserved'):
+                        study.main()
+                for saved_path, contents in saved_scores.items():
+                    self.assertEqual(saved_path.read_bytes(), contents)
 
                 # Equal bin counts with different physical binning cannot reuse a fit.
                 changed_path = Path('output/model')/study.STAGES[2]/'model.pt'

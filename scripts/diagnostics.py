@@ -54,7 +54,7 @@ def _run_trend(dataset, frames, cuts, run, stem):
     era = frame.era.iloc[indices[0]]
     ls = frame.ls_number.iloc[indices].to_numpy()
     plot_run_trend(ls, count_series, mean_pt, score_series, OUT/f'plots/diagnostics/{stem}.png',
-                   label=f'Run {run} (Good), {era}')
+                   label=f'Run {run} ({str(frame.label.iloc[indices[0]]).title()}), {era}')
     summary = pd.DataFrame(dict(ls_number=ls, global_root_fills=count_series['GlbMuon ROOT fills'],
                                standalone_root_fills=count_series['StaMuon ROOT fills'],
                                global_hits_inrange=count_series['GlobalHits in-range fills'],

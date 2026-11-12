@@ -24,7 +24,7 @@ def frame():
         "dataset": ["sample"] * 5,
         "run_number": [391550, 391550, 393240, 398902, 399000],
         "ls_number": [1, 4, 1, 1, 1],
-        "label": ["good", "good", "bad_well_known", "good", "good"],
+        "label": ["good", "good", "bad", "good", "good"],
         "split": ["test"] * 5,
         "dcs_pass": [True, True, True, True, False],
         "anomaly_score": [2., np.nan, 4., 8., 10.],
@@ -93,12 +93,23 @@ class PlotTests(unittest.TestCase):
                 folder.mkdir()
                 for me in ('Muons__first', 'Muons__second'):
                     (folder/f'{me}.parquet').touch()
-            with patch.object(plot, 'EXAMPLES', {'good': (1,)}), patch.object(plot, 'REGIONS', {'A': (2, 3)}), \
+            with patch.object(plot, 'EXAMPLES', {'good': (1,), 'bad': (2, 3)}), patch.object(plot, 'REGIONS', {'A': (2, 3)}), \
                     patch.object(plot, 'MANIFEST', manifest), patch.object(plot, 'raw_folder', side_effect=lambda _, run: root/str(run)), \
                     patch.object(plot, 'plot_me') as draw_me, patch.object(plot, 'plot_entries') as draw_entries:
                 plot.plot_examples()
-            self.assertEqual([len(call.args[0]) for call in draw_me.call_args_list], [1, 1, 2, 2])
-            self.assertEqual([call.args[1] for call in draw_entries.call_args_list], [None, 'A'])
+            self.assertEqual([len(call.args[0]) for call in draw_me.call_args_list], [1, 1, 1, 1, 1, 1, 2, 2])
+            self.assertEqual([call.args[1] for call in draw_entries.call_args_list], [None, None, None, 'A'])
+
+    def test_unknown_certification_uses_a_separate_background_and_legend(self):
+        source = frame()
+        source.loc[0, 'label'] = 'unknown'
+        with patch.object(plots, 'save') as save:
+            plots.score_view(source, 2., 'unused.png')
+        fig, _ = save.call_args.args
+        ax = fig.axes[0]
+        from matplotlib.colors import to_rgba
+        np.testing.assert_allclose(ax.patches[0].get_facecolor(), to_rgba(plots.GREY))
+        self.assertIn('Unknown', [text.get_text() for text in ax.get_legend().texts])
 
     def test_recorded_ls_axis_does_not_close_unscored_gap_and_normalizes_threshold(self):
         with patch.object(plots, "save") as save:
@@ -179,25 +190,6 @@ class PlotTests(unittest.TestCase):
                              {"test.png", "test_log.png", "lowstats.png"})
             self.assertTrue(all(p.stat().st_size > 1000 for p in root.rglob("*.png")))
 
-    def test_retention_preserves_dcs_off_ls_and_distinguishes_missed_from_unscored(self):
-        details = pd.DataFrame({"dataset": ["sample"] * 4,
-                                "run_number": [20, 10, 10, 20], "ls_number": [2, 2, 1, 1],
-                                "dcs_pass": [True, False, True, True],
-                                "base__scored": [True] * 4, "base__flag": [False, True, True, False],
-                                "candidate__scored": [False, True, True, True],
-                                "candidate__flag": [False, False, True, True]})
-        with tempfile.TemporaryDirectory() as temporary:
-            with patch.object(plots, "save", wraps=plots.save) as save:
-                plots.plot_retention(details, temporary)
-            fig, path = save.call_args.args
-            ax = fig.axes[0]
-            np.testing.assert_array_equal(ax.images[0].get_array(), [[2, 2, 1, 1], [2, 1, 2, 0]])
-            self.assertEqual([text.get_text() for text in ax.get_yticklabels()], ["base", "candidate"])
-            self.assertEqual([text.get_text() for text in ax.get_xticklabels()], ["10", "20"])
-            self.assertEqual([text.get_text() for text in fig.legends[0].get_texts()],
-                             ["Detected", "Not detected", "Unscored"])
-            self.assertEqual(Path(path).name, "known_bad.png")
-            self.assertGreater(Path(path).stat().st_size, 1000)
 
 
 if __name__ == "__main__":

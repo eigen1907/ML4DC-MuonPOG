@@ -1,4 +1,4 @@
-"""Read the cached eight Muon MEs, preserving the historical run split."""
+"""Read cached Muon MEs and use Run Registry summaries for run labels."""
 
 import hashlib
 import json
@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-from config import (CACHED_MES, DCS_PATH, IDS, MANIFEST, MODEL_MES, PROMPT_RECO_PATTERN,
+from config import (DCS_PATH, IDS, MANIFEST, MODEL_MES, PROMPT_RECO_PATTERN,
                     RAW, REGIONS, RUN_LABELS, SEED, SPECIAL_RUNS, raw_folder)
 
 
@@ -67,8 +67,18 @@ def select(frame, intervals, phi_entries):
     return result
 
 
+def load_run_labels():
+    """Read RR-derived Good/Bad/unknown labels; absence never means Good."""
+    labels = pd.read_csv(RUN_LABELS)
+    if (not {"run_number", "label"}.issubset(labels.columns)
+            or labels.run_number.duplicated().any()
+            or not labels.label.isin(("good", "bad", "unknown")).all()):
+        raise ValueError("Expected unique run numbers and good/bad/unknown RR labels")
+    return labels.set_index("run_number").label
+
+
 def load_dataset():
-    """Read each selected parquet once; require all ten cached MEs per run.
+    """Read each selected parquet once; skip runs missing a selected ME.
 
     Split the full run catalogue before excluding incomplete caches. Native
     signed bins, ROOT entries and in-range bin totals remain distinct. Only the
@@ -76,21 +86,21 @@ def load_dataset():
     """
     manifest = pd.read_csv(MANIFEST)
     manifest = manifest[manifest.dataset.str.contains(PROMPT_RECO_PATTERN)].copy()
-    labels = pd.read_csv(RUN_LABELS)
-    runs, listed = set(manifest.run_number), set(labels.run_number)
-    bad = set(labels.loc[labels.label.eq("bad_well_known"), "run_number"])
-    ambiguous = set(labels.loc[labels.label.eq("bad_ambiguous"), "run_number"])
-    if (manifest.empty or len(manifest) != len(runs) or len(labels) != len(listed) or runs != listed
-            or not labels.label.isin({"good", "bad_well_known", "bad_ambiguous"}).all() or not bad or not ambiguous):
-        raise ValueError("PromptReco runs and data/run_labels.csv do not agree")
+    if manifest.empty or manifest.run_number.duplicated().any():
+        raise ValueError("Expected one cached PromptReco dataset per run")
+    labels = load_run_labels()
+    manifest["label"] = manifest.run_number.map(labels).fillna("unknown")
     manifest["era"] = manifest.dataset.str.extract(r"Run(2025[A-Z])")[0]
-    good = manifest[~manifest.run_number.isin(bad | ambiguous)]
-    train, holdout = train_test_split(good, train_size=.70, random_state=SEED, stratify=good.era)
-    validation, test = train_test_split(holdout, train_size=.5, random_state=SEED, stratify=holdout.era)
+    good = manifest[manifest.label.eq("good")]
+    try:
+        train, holdout = train_test_split(good, train_size=.70, random_state=SEED, stratify=good.era)
+        validation, test = train_test_split(holdout, train_size=.5, random_state=SEED, stratify=holdout.era)
+    except ValueError as error:
+        raise ValueError("Not enough RR-labelled Good runs for the run-separated split; collect more RR metadata") from error
     split = {"train": set(train.run_number), "validation": set(validation.run_number),
-             "test": set(test.run_number) | bad | ambiguous}
+             "test": set(test.run_number) | set(manifest.loc[manifest.label.ne("good"), "run_number"])}
     ready = [all((raw_folder(row.dataset, row.run_number, root=RAW) / f"{stem}.parquet").exists()
-                 for stem in CACHED_MES) for row in manifest.itertuples()]
+                 for stem in MODEL_MES) for row in manifest.itertuples()]
     expected_runs = len(manifest)
     manifest = manifest.loc[ready]
     if manifest.empty:
@@ -154,7 +164,7 @@ def load_dataset():
             raise ValueError(f"Shared GlbMuon ROOT entries differ: run {row.run_number}")
         frame = pd.DataFrame({"dataset": row.dataset, "run_number": row.run_number,
                               "ls_number": expected_ls, "era": row.era, "eta_entries": entries[eta_me]})
-        frame["label"] = "bad_ambiguous" if row.run_number in ambiguous else "bad_well_known" if row.run_number in bad else "good"
+        frame["label"] = row.label
         frame["split"] = next(name for name, members in split.items() if row.run_number in members)
         frames.append(frame)
         start = stop
@@ -170,7 +180,7 @@ def load_dataset():
 
 
 def validation_roles(frame):
-    """Historical run-separated validation halves, then remove special controls."""
+    """Separate validation runs for monitoring and calibration; remove special controls."""
     runs = frame.loc[frame.split.eq("validation") & frame.label.eq("good"),
                      ["run_number", "era"]].drop_duplicates()
     monitoring, calibration = train_test_split(runs, test_size=.5, random_state=SEED, stratify=runs.era)
@@ -179,7 +189,7 @@ def validation_roles(frame):
 
 
 def fingerprint(dataset):
-    """Identify the actual counts, historical split/labels and DCS selection."""
+    """Identify actual counts, the current run split/RR labels and DCS selection."""
     digest = hashlib.sha256(DCS_PATH.read_bytes())
     digest.update(dataset["frame"][IDS + ["split", "label"]].to_csv(index=False).encode())
     for hist in dataset["histograms"]:

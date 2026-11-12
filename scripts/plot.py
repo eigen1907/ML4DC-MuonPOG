@@ -9,7 +9,8 @@ import mplhep as hep
 import numpy as np
 import pandas as pd
 
-from config import EXAMPLES, MANIFEST, OUT, PROMPT_RECO_PATTERN, REGIONS, RUN_LABELS, raw_folder
+from config import EXAMPLES, MANIFEST, OUT, PROMPT_RECO_PATTERN, REGIONS, raw_folder
+from data import load_run_labels
 
 
 def plot_me(input_paths: list[Path], region: str | None = None) -> None:
@@ -41,14 +42,10 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
     if len(eras) != 1:
         raise SystemExit("Expected one era in each plot")
     era = eras[0]
-    labels = pd.read_csv(RUN_LABELS).set_index("run_number").label
-    statuses = [{"good": "Good", "bad_well_known": "Bad", "bad_ambiguous": "Bad"}.get(labels.get(number))
+    labels = load_run_labels()
+    statuses = [{"good": "Good", "bad": "Bad"}.get(labels.get(number), "Unknown")
                 for number in np.unique(runs)]
-    if None in statuses:
-        raise SystemExit("No Good/Bad label for every run")
-    if region and any(status != "Good" for status in statuses):
-        raise SystemExit("Region plots require Good runs only")
-    status = statuses[0]
+    status = statuses[0] if len(set(statuses)) == 1 else "Mixed"
     axis_label = "ME x axis"
     if short_me.endswith("_eta"):
         axis_label = "Muon $\\eta$"
@@ -94,7 +91,7 @@ def plot_me(input_paths: list[Path], region: str | None = None) -> None:
         _, run_sizes = np.unique(runs[nonempty], return_counts=True)
         for boundary in np.cumsum(run_sizes)[:-1]:
             ax.axvline(boundary + 0.5, color="white", linewidth=0.6, alpha=0.8)
-        rlabel = f"Group {region} (Good), {era}"
+        rlabel = f"Group {region} ({status}), {era}"
     else:
         rlabel = f"Run {run} ({status}), {era}"
     hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None,
@@ -120,8 +117,10 @@ def plot_entries(input_paths: list[Path], region: str | None = None) -> None:
 
     run = int(frame.run_number.min())
     era = frame.dataset.iloc[0].split("/")[2].split("-")[0].removeprefix("Run")
-    label = pd.read_csv(RUN_LABELS).set_index("run_number").loc[run, "label"]
-    status = "Good" if label == "good" else "Bad"
+    labels = load_run_labels()
+    statuses = {{"good": "Good", "bad": "Bad"}.get(labels.get(number), "Unknown")
+                for number in frame.run_number.unique()}
+    status = next(iter(statuses)) if len(statuses) == 1 else "Mixed"
     relative = Path("good_but_anomaly") / region if region else Path(status.lower()) / str(run)
     out = (OUT/"plots/mes") / relative / "entries.png"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -161,7 +160,9 @@ def plot_examples() -> None:
     """Draw the fixed representative runs and A–D regions from the cache."""
     inventory = pd.read_csv(MANIFEST)
     inventory = inventory[inventory.dataset.str.contains(PROMPT_RECO_PATTERN)]
-    for name, runs in {**EXAMPLES, **REGIONS}.items():
+    cases = [(None, (run,)) for runs in EXAMPLES.values() for run in runs]
+    cases.extend(REGIONS.items())
+    for region, runs in cases:
         files = []
         for run in runs:
             rows = inventory[inventory.run_number.eq(run)]
@@ -170,8 +171,7 @@ def plot_examples() -> None:
             folder = raw_folder(rows.iloc[0].dataset, run)
             files.extend(sorted(folder.glob("Muons__*.parquet")))
         if not files:
-            raise ValueError(f"No cached MEs for example {name}")
-        region = name if name in REGIONS else None
+            raise ValueError(f"No cached MEs for runs {runs}")
         grouped = defaultdict(list)
         for path in files:
             grouped[path.stem].append(path)

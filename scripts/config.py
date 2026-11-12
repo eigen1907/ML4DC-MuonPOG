@@ -7,9 +7,8 @@ OUT = Path("output")
 RAW = OUT / "dataset/raw"
 MANIFEST = OUT / "dataset/runs.csv"
 PROMPT_RECO_PATTERN = r"/Run2025[A-Z]-PromptReco-v\d+/DQMIO$"
-RUN_LABELS = Path("data/run_labels.csv")
+RUN_LABELS = Path("data/rr/summary/runs.csv")
 DCS_PATH = Path("data/dcs/raw/2025_reference.json")
-KNOWN_BAD_REFERENCE = Path("data/known_bad_reference.csv")
 IDS = ["dataset", "run_number", "ls_number"]
 SEED = 42
 WINDOW_SIZE = 5
@@ -22,7 +21,7 @@ REGIONS = {
     "C": (396727, 396735, 396757, 396763),
     "D": (398902,),
 }
-EXAMPLES = {"good": (397332,), "bad_known": (396153,), "bad_ambiguous": (395723,)}
+EXAMPLES = {"good": (397332,), "bad": (396153, 395723)}
 MODEL_MES = (
     "Muons__Isolation__global__relPFIso_R03",
     "Muons__MuonRecoAnalyzer__GlbMuon_Glb_eta",
@@ -33,11 +32,6 @@ MODEL_MES = (
     "Muons__globalMuons__GeneralProperties__NumberOfMeanRecHitsPerTrack_glb",
     "Muons__standAloneMuonsUpdatedAtVtx__HitProperties__NumberOfValidRecHitsPerTrack_sta",
 )
-CACHED_MES = tuple(sorted((
-    *MODEL_MES,
-    "Muons__MuonRecoOneHLT__GlbMuon_Glb_eta",
-    "Muons__MuonRecoOneHLT__GlbMuon_Glb_pt",
-)))
 
 BASE = "01_ae_2feat"
 BASE_DCS = "02_ae_2feat_dcs"

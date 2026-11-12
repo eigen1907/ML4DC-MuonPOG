@@ -9,12 +9,12 @@ import pandas as pd
 import torch
 
 from config import (BASE, BASE_DCS, DM_DCS, DM_WINDOW, EXPERIMENTS, HIST_DCS,
-                    IDS, KNOWN_BAD_REFERENCE, OUT, SEED, SPECIAL_RUNS, WINDOW_SIZE)
-from data import fingerprint, load_dataset, validation_roles
+                    OUT, SEED, SPECIAL_RUNS, WINDOW_SIZE)
+from data import fingerprint, load_dataset, load_run_labels, validation_roles
 from models import HistogramAE, fit_base, fit_histogram, prepare
-from plots import plot_comparison, plot_retention, plot_stage
+from plots import plot_comparison, plot_stage
 from scoring import (QUANTILE, base_terms, calibrate, histogram_terms, require_alignment,
-                     retention, summarize, window_mean)
+                     summarize, window_mean)
 
 STAGES = tuple(EXPERIMENTS)
 MONITOR_LIMIT = 4096
@@ -40,46 +40,42 @@ def save_stage(stage, frame, terms, calibration, signature, values=None):
         source_model=DM_DCS if stage == DM_WINDOW else stage, cohorts=summary,
         training_selection=('Historical Good training LS, without DCS selection' if stage == BASE
                             else signature['selection']),
-        interpretation='Exploratory LS score under provisional run labels; not P(bad)'), indent=2)+'\n')
+        interpretation='Exploratory LS score under RR run labels; not P(bad)'), indent=2)+'\n')
     plot_stage(scores, history_for(stage), cut, OUT/'plots'/stage)
     print(stage, {r['cohort']: r['flagged_fraction'] for r in summary
-                  if r['cohort'] in ('test_good_standard', 'test_bad_well_known', 'A', 'B', 'C', 'D')}, flush=True)
+                  if r['cohort'] in ('test_good_standard', 'test_bad', 'A', 'B', 'C', 'D')}, flush=True)
     return scores, cut
 
 
 def compare(frames, cuts):
-    """Protect prior detections, including all 507 recorded Known Bad LS."""
-    frame = frames[BASE]
-    require_alignment(frames, frame)
-    old = pd.read_csv(KNOWN_BAD_REFERENCE)
-    index = pd.MultiIndex.from_frame(frame[IDS])
-    known = frame.split.eq('test') & frame.label.eq('bad_well_known')
-    expected = pd.MultiIndex.from_frame(frame.loc[known, IDS])
-    protected = pd.MultiIndex.from_frame(old[IDS])
-    if (not protected.is_unique or len(expected) != len(protected)
-            or len(expected.difference(protected)) or old.threshold.nunique() != 1):
-        raise ValueError('Known Bad catalogue changed; review the frozen detection reference')
-    previous = frame.copy()
-    previous['anomaly_score'] = np.nan
-    previous.iloc[index.get_indexer(protected), previous.columns.get_loc('anomaly_score')] = old.anomaly_score.to_numpy()
-    label = 'Previous detections'
-    audit, details = retention({label: previous, **frames}, {label: float(old.threshold.iloc[0]), **cuts}, baseline=label)
+    """Compare aligned LS scores using one Bad category."""
+    require_alignment(frames, frames[BASE])
     folder = OUT/'predict/comparison'
     folder.mkdir(parents=True, exist_ok=True)
-    audit.to_csv(folder/'known_bad_retention.csv', index=False)
-    details.to_csv(folder/'known_bad_ls.csv', index=False)
-    pd.DataFrame([dict(stage=name, **row) for name, scores in frames.items() for row in summarize(scores)]).to_csv(
-        folder/'cohorts.csv', index=False)
-    plot_retention(details, OUT/'plots/comparison')
+    summary = pd.DataFrame([dict(stage=name, **row) for name, scores in frames.items()
+                            for row in summarize(scores)])
+    summary.to_csv(folder/'cohorts.csv', index=False)
     plot_comparison(frames, cuts, OUT/'plots/comparison')
-    print(audit.to_string(index=False), flush=True)
+    print(summary[summary.cohort.isin(('test_good_standard', 'test_bad'))].to_string(index=False), flush=True)
+
+
+def read_saved_scores(path):
+    """Display current RR labels with historical scores, cuts and splits unchanged."""
+    scores = pd.read_parquet(path)
+    try:
+        labels = load_run_labels()
+    except FileNotFoundError:
+        scores.loc[scores.label.str.startswith('bad_', na=False), 'label'] = 'bad'
+    else:
+        scores['label'] = scores.run_number.map(labels).fillna('unknown')
+    return scores
 
 
 def draw_saved():
     frames, cuts = {}, {}
     for stage in STAGES:
         folder = OUT/'predict'/stage
-        frames[stage] = pd.read_parquet(folder/'scores.parquet')
+        frames[stage] = read_saved_scores(folder/'scores.parquet')
         cuts[stage] = json.loads((folder/'metrics.json').read_text())['threshold']
         plot_stage(frames[stage], history_for(stage), cuts[stage], OUT/'plots'/stage)
     compare(frames, cuts)
@@ -128,7 +124,15 @@ def main():
         original_path.write_bytes(pickle.dumps(original))
     original = pickle.loads(original_path.read_bytes())
     if original['features'] != features or original['run_split'] != dataset['run_split']:
-        raise ValueError('Frozen original AE differs from the current ME/run split')
+        raise ValueError('RR labels or run split changed; existing models/results are preserved. Use --plots-only for historical results or start a new fit in a separate output directory')
+    cached = {}
+    for stage in (BASE_DCS, HIST_DCS, DM_DCS):
+        path = OUT/'model'/stage/('model.pkl' if stage == BASE_DCS else 'model.pt')
+        if path.exists():
+            cached[stage] = (pickle.loads(path.read_bytes()) if stage == BASE_DCS else
+                             torch.load(path, map_location='cpu', weights_only=False))
+            if cached[stage].get('signature') != signature:
+                raise ValueError(f'{stage}: RR labels or training selection changed; existing results are preserved. Use --plots-only or start a separate fit')
     (OUT/'predict').mkdir(parents=True, exist_ok=True)
     (OUT/'predict/protocol.json').write_text(json.dumps({**signature, 'stages': list(STAGES),
         'historical_base': original.get('origin', 'Preserved original checkpoint; not refitted'),
@@ -140,15 +144,13 @@ def main():
                        reset_at=['dataset', 'run', 'LS gap', 'DCS state']),
         'threshold': dict(quantile=QUANTILE, reference='Separate Good calibration LS'),
         'dcs': 'Public tracker-ready snapshot, not a Muon quality label or Golden JSON',
-        'assessment': 'Full previous Known Bad detection audit; reused Test is exploratory'}, indent=2)+'\n')
+        'assessment': 'Reused Test is exploratory; labels come from RR summaries'}, indent=2)+'\n')
     frames, cuts = {}, {}
     terms, values = base_terms(dataset['features'], original)
     frames[BASE], cuts[BASE] = save_stage(BASE, frame, terms, calibration, signature, values)
     path = OUT/'model'/BASE_DCS/'model.pkl'
     if path.exists():
-        selected = pickle.loads(path.read_bytes())
-        if selected.get('signature') != signature:
-            raise ValueError('Feature AE selection changed; explicitly remove before refitting')
+        selected = cached[BASE_DCS]
     else:
         print('Training DCS-only feature AE on', int(train.sum()), 'LS', flush=True)
         selected = fit_base(dataset['features'], train, fit_monitor)
@@ -161,9 +163,7 @@ def main():
     for stage, distribution, score in ((HIST_DCS, 'mse', 'mse'), (DM_DCS, 'dm', 'weighted')):
         path = OUT/'model'/stage/'model.pt'
         if path.exists():
-            saved = torch.load(path, map_location='cpu', weights_only=False)
-            if saved.get('signature') != signature:
-                raise ValueError(f'{stage}: selection changed; explicitly remove before refitting')
+            saved = cached[stage]
             same_axes = (len(saved['axes']) == len(dataset['axes']) and all(
                 np.array_equal(old[key], current[key])
                 for old, current in zip(saved['axes'], dataset['axes'])

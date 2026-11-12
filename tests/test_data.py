@@ -37,7 +37,7 @@ class DataTests(unittest.TestCase):
             dataset = f"/Muon0/Run2025{era}-PromptReco-v1/DQMIO"
             for index in range(7):
                 run = offset + index
-                label = "good" if index < 6 else "bad_well_known" if era == "B" else "bad_ambiguous"
+                label = "good" if index < 6 else "bad"
                 rows.append({"dataset": dataset, "run_number": run, "ls_count": 2, "ls_completeness": 1.})
                 labels.append({"run_number": run, "label": label})
                 for name in self.names:
@@ -68,7 +68,7 @@ class DataTests(unittest.TestCase):
 
     def test_single_read_split_before_cache_filter_and_root_entries(self):
         manifest = self.cache()
-        missing = data.RAW / manifest.iloc[-2].dataset.strip("/").replace("/", "__") / "205" / self.names[-1]
+        missing = data.RAW / manifest.iloc[-2].dataset.strip("/").replace("/", "__") / "205" / self.names[0]
         missing.unlink()
         good = manifest[~manifest.run_number.isin([106, 206])].copy()
         good["era"] = good.dataset.str.extract(r"Run(2025[A-Z])")[0]
@@ -116,6 +116,25 @@ class DataTests(unittest.TestCase):
         hm_index = names.index(hm)
         np.testing.assert_array_equal(loaded["root_entries"][:2, hm_index], [17, 0])
         np.testing.assert_array_equal(loaded["features"][0, 2*hm_index:2*hm_index+2], [.25, 0])
+
+    def test_missing_rr_labels_are_unknown_and_never_enter_training(self):
+        self.cache()
+        labels = pd.read_csv(data.RUN_LABELS)
+        labels.loc[labels.run_number.ne(106)].to_csv(data.RUN_LABELS, index=False)
+        loaded = data.load_dataset()
+        missing = loaded['frame'].loc[loaded['frame'].run_number.eq(106)]
+        self.assertTrue(missing.label.eq('unknown').all())
+        self.assertTrue(missing.split.eq('test').all())
+        self.assertNotIn(106, loaded['run_split']['train'])
+        self.assertNotIn(106, loaded['run_split']['validation'])
+
+    def test_insufficient_rr_good_coverage_fails_with_a_clear_reason(self):
+        self.cache()
+        labels = pd.read_csv(data.RUN_LABELS)
+        labels.loc[labels.run_number.ne(100), 'label'] = 'unknown'
+        labels.to_csv(data.RUN_LABELS, index=False)
+        with self.assertRaisesRegex(ValueError, 'Not enough RR-labelled Good runs'):
+            data.load_dataset()
 
     def test_missing_first_cache_does_not_define_the_me_schema(self):
         manifest = self.cache()
@@ -187,7 +206,7 @@ class DataTests(unittest.TestCase):
         dataset["histograms"][0][0, 0] += 1
         self.assertNotEqual(original, data.fingerprint(dataset))
         dataset["histograms"][0][0, 0] -= 1
-        frame.loc[0, "label"] = "bad_well_known"
+        frame.loc[0, "label"] = "bad"
         self.assertNotEqual(original, data.fingerprint(dataset))
 
 
