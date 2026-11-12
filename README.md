@@ -20,7 +20,7 @@ bash runs/data/oms.sh --runs 393240 396153 397332  # CERN device login
 bash runs/plotting/mes.sh
 
 # Train one experiment into a new directory, then predict and plot
-bash runs/train/model_03_ae_dm_k1.sh --output output/model/dm_rr
+bash runs/train.sh model_03_ae_dm_k1 --output output/model/dm_rr
 bash runs/predict.sh output/model/dm_rr data/dials output/predict/dm_rr
 bash runs/plotting/scores.sh --input output/predict/dm_rr
 
@@ -28,12 +28,12 @@ bash runs/plotting/scores.sh --input output/predict/dm_rr
 bash runs/plotting/scores.sh --input output/predict/03_ae_dm_k1
 ```
 
-Training recipes accept `--data` for another DIALS cache and `--output` for a checkpoint directory. `runs/predict.sh` takes `CHECKPOINT DATA [OUTPUT]`. The score plotter accepts optional `--checkpoint` and `--output`; it finds the recorded checkpoint automatically when available.
+`runs/train.sh MODEL [OPTIONS]` takes a model module basename, such as `model_03_ae_dm_k1`, and forwards `--data`, `--output` and `--source` to training. `runs/predict.sh` takes `CHECKPOINT DATA [OUTPUT]`. The score plotter accepts optional `--checkpoint` and `--output`; it finds the recorded checkpoint automatically when available.
 
 Stage 04 uses Stage 03 weights and calibrates the window score; it does not train another network:
 
 ```bash
-bash runs/train/model_04_ae_dm_k1_weighted_window.sh \
+bash runs/train.sh model_04_ae_dm_k1_weighted_window \
   --source output/model/dm_rr --output output/model/dm_window_rr
 ```
 
@@ -58,7 +58,7 @@ scripts/
     scores.py               saved anomaly-score and loss plots
 runs/
   data/                     metadata download recipes
-  train/                    one recipe per experiment
+  train.sh                  MODEL → training/calibrated checkpoint
   predict.sh                checkpoint → predictions
   plotting/                 ME and score plot recipes
 data/
