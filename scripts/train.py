@@ -121,6 +121,8 @@ def fit_histogram(dataset, inputs, train_mask, monitor_indices, spec):
 
 def check_compatible(spec, saved, dataset, context):
     """Never reuse a fit when its training cohort or histogram layout changed."""
+    if spec.KIND == 'window':
+        spec = model_spec(spec.SOURCE)
     if saved.get('signature') != context['signature']:
         raise ValueError('Training selection changed; choose a separate --output directory')
     if spec.KIND == 'feature':
@@ -146,11 +148,11 @@ def main():
     parser.add_argument('--data', type=Path, default=DIALS, help='Cached DIALS directory')
     parser.add_argument('--years', type=int, nargs='+', help='Use only these cached years; default: all')
     parser.add_argument('--output', type=Path, help='Checkpoint directory; default: output/model/<model>')
-    parser.add_argument('--source', type=Path, help='Model 03 checkpoint for model 04 only')
+    parser.add_argument('--source', type=Path, help='Source checkpoint for a window experiment')
     args = parser.parse_args()
     spec = model_spec(args.model)
     if args.source and spec.KIND != 'window':
-        parser.error('--source is only used by model 04')
+        parser.error('--source is only used by window experiments')
     folder = args.output or OUT/'model'/spec.NAME
     filename = 'source.json' if spec.KIND == 'window' else 'model.pkl' if spec.KIND == 'feature' else 'model.pt'
     path = folder/filename

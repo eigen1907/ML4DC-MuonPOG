@@ -175,8 +175,7 @@ def plot_stage(scores, history, threshold, folder):
         period = _period(years)
         label = period or "Training"
         if source:
-            shared = f"Shared with {source.split('_', 1)[0]}"
-            label = f"{period} · {shared}" if period and period != "2025" else shared
+            label = f"Shared with {source.split('_', 1)[0]}"
         hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
         save(fig, folder / "loss.png")
 
@@ -194,16 +193,19 @@ def read_scores(folder):
 
 
 def history_for(checkpoint):
-    from scripts.models.core import load_checkpoint
+    from scripts.models.core import load_checkpoint, model_spec
 
     spec, saved, _ = load_checkpoint(checkpoint)
-    if spec.KIND == "window":
-        history = dict(saved["history"], source_model=saved["source_model"])
-    elif spec.KIND == "feature":
+    source = spec.SOURCE if spec.KIND == "window" else None
+    if source:
+        spec = model_spec(source)
+    if spec.KIND == "feature":
         history = dict(train=saved["train_losses"], validation=saved["validation_losses"],
                        loss="Feature MSE")
     else:
         history = dict(saved["history"])
+    if source:
+        history["source_model"] = source
     history["training_years"] = saved.get("training_years") or (saved.get("signature") or {}).get("training_years")
     return history
 

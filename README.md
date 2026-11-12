@@ -50,7 +50,7 @@ With the current RR snapshot, 2026 has no Muon Bad labels: it tests stability on
 Good runs and allows inspection of Unknown runs, not Bad detection efficiency.
 Multiple plot inputs must share the checkpoint, threshold and training signature;
 only Test rows are included, and an explicit `--output` directory is required.
-`output/plots/` contains only `mes/` and the four numbered model folders. Each
+`output/plots/` contains only `mes/` and the numbered model folders. Each
 model folder holds the combined 2024–2026 Test views, distributions and confusion
 matrix, plus the 2024–2025 training loss curve. No year subfolders are used.
 Each model also gets `confusion_matrix.png`: DCS-selected, finite-score Good/Bad
@@ -63,12 +63,17 @@ DIALS collection uses the `muo` workspace and caches available per-LS `Muons/` 1
 
 `runs/train.sh MODEL [OPTIONS]` and `runs/predict.sh CHECKPOINT DATA [OUTPUT] [OPTIONS]` forward options such as `--years 2024 2025 2026`. Both use all cached years when `--years` is omitted. The score plotter accepts optional `--checkpoint` and `--output`; it finds the recorded checkpoint automatically when available.
 
-Stage 04 uses Stage 03 weights and calibrates the window score; it does not train another network. Its `loss.png` shows the shared Stage 03 history:
+Window experiments reuse their source weights and calibrate the averaged score;
+they do not train another network. Stage 04 uses Stage 03; Stage 05 uses Stage 01.
+Their `loss.png` shows the source training history:
 
 ```bash
 bash runs/train.sh model_04_ae_dm_k1_weighted_window \
   --years 2024 2025 --source output/model/2024_2025/03_ae_dm_k1 \
   --output output/model/2024_2025/04_ae_dm_k1_weighted_window
+bash runs/train.sh model_05_ae_2feat_window \
+  --years 2024 2025 --source output/model/2024_2025/01_ae_2feat \
+  --output output/model/2024_2025/05_ae_2feat_window
 ```
 
 Metadata recipes use `.venv-metadata`; DIALS collection uses `.venv-dials` and the `dials` dependency group. Model and plotting recipes use the project environment. Credentials stay outside the repository. Commands run from the repository root through `python -m scripts.…`.
@@ -85,7 +90,7 @@ scripts/
     config.py               paths, MEs and shared study choices
     preprocessing.py        moments, histogram inputs and training selections
     core.py                 shared network, residuals, calibration and checkpoints
-    model_0*.py             numbered experiment definitions (01–04)
+    model_0*.py             numbered experiment definitions (01–05)
   train.py                  fit/reuse one experiment and save its threshold
   predict.py                apply a saved checkpoint to cached MEs
   plotting/
@@ -107,6 +112,7 @@ output/
   plots/02_ae_hist/
   plots/03_ae_dm_k1/
   plots/04_ae_dm_k1_weighted_window/
+  plots/05_ae_2feat_window/
 ```
 
 Dataset folder names encode `/` as `__`. Available runs are discovered from the cache; no inventory is required. Generated data and results are ignored by Git.
@@ -119,10 +125,11 @@ Dataset folder names encode `/` as `__`. Available runs are discovered from the 
 | `02_ae_hist` | Full-histogram MSE AE |
 | `03_ae_dm_k1` | K=1 Dirichlet-multinomial AE; variance-weighted residuals |
 | `04_ae_dm_k1_weighted_window` | Stage 03 scores averaged over a centered five-LS window |
+| `05_ae_2feat_window` | Stage 01 mean/std AE scores averaged over the same five-LS window |
 
-All four experiments use DCS-selected Good training LS, so their names omit the DCS suffix. `01_ae_2feat` is the former `02_ae_2feat_dcs`; the unfiltered historical baseline has been removed.
+All experiments use DCS-selected Good training LS, so their names omit the DCS suffix. `01_ae_2feat` is the former `02_ae_2feat_dcs`; the unfiltered historical baseline has been removed.
 
-Eight MEs are used; OneHLT is excluded. There is no entry cut. Good runs are split 70/15/15% by run with seed 42; Bad and Unknown are test-only. Validation has separate monitoring and calibration runs. The threshold is the 97.5th percentile of finite Good calibration scores. Stage 04 uses future LS and is an offline study.
+Eight MEs are used; OneHLT is excluded. There is no entry cut. Good runs are split 70/15/15% by run with seed 42; Bad and Unknown are test-only. Validation has separate monitoring and calibration runs. The threshold is the 97.5th percentile of finite Good calibration scores. Stages 04–05 average up to two preceding and two following LS without crossing run, dataset, LS-gap or DCS boundaries. Each uses its own threshold from the same Good calibration runs; both are offline studies.
 
 Collecting more years or MEs does not change these model inputs. Training requires one PromptReco processing per physical run and rejects duplicates, even across different dataset folders. Use a cache containing one processing per run for training; prediction can inspect all cached processing versions. Each selected year requires its annual DCS JSON.
 

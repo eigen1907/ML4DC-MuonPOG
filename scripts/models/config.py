@@ -1,4 +1,4 @@
-"""Shared choices for cached inputs, fixed examples and four DCS-selected experiments."""
+"""Shared choices for cached inputs, fixed examples and numbered experiments."""
 
 from pathlib import Path
 
@@ -36,11 +36,13 @@ FEATURE_AE = "01_ae_2feat"
 HIST_AE = "02_ae_hist"
 DM_AE = "03_ae_dm_k1"
 WINDOW_AE = "04_ae_dm_k1_weighted_window"
+FEATURE_WINDOW_AE = "05_ae_2feat_window"
 EXPERIMENTS = {
     FEATURE_AE: "Mean/std AE trained on Good DCS-pass LS; no entry cut",
     HIST_AE: "Native-histogram AE trained and scored with MSE; Good DCS-pass LS",
     DM_AE: "K=1 native-histogram DM AE; variance-weighted reconstruction score",
     WINDOW_AE: "Same DM checkpoint; centered LS-window mean of its weighted score",
+    FEATURE_WINDOW_AE: "Same mean/std checkpoint; centered five-LS mean of its reconstruction score",
 }
 
 

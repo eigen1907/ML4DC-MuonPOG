@@ -12,12 +12,18 @@ import torch
 from scripts.models.config import EXPERIMENTS, OUT
 from scripts.data.dials import load_dataset
 from scripts.models.core import (QUANTILE, feature_terms, histogram_terms, load_checkpoint,
-                                 mean_score, restore_model, threshold_for, window_mean)
+                                 mean_score, model_spec, restore_model, threshold_for, window_mean)
 from scripts.models.preprocessing import prepare
 
 
 def predict_terms(spec, saved, dataset):
     """Reconstruct with saved scaling; never fit a scaler or recalibrate a cut."""
+    if spec.KIND == 'window':
+        terms, values = predict_terms(model_spec(spec.SOURCE), saved, dataset)
+        frame = dataset['frame'].copy()
+        frame['anomaly_score'] = mean_score(terms) if values is None else values
+        values = window_mean(frame)
+        return values[:, None], values
     if spec.KIND == 'feature':
         features = [f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
         if saved['features'] != features:
@@ -33,11 +39,6 @@ def predict_terms(spec, saved, dataset):
     inputs, _ = prepare(dataset, scaler=saved['scaler'])
     model = restore_model(spec, saved)
     terms = histogram_terms(model, inputs, dataset['histograms'])[spec.SCORE]
-    if spec.KIND == 'window':
-        frame = dataset['frame'].copy()
-        frame['anomaly_score'] = mean_score(terms)
-        values = window_mean(frame)
-        return values[:, None], values
     return terms, None
 
 

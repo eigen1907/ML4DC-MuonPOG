@@ -227,6 +227,8 @@ def load_checkpoint(path):
 
 def restore_model(spec, saved):
     """Restore the network without fitting or changing its parameters."""
+    if spec.KIND == 'window':
+        spec = model_spec(spec.SOURCE)
     if spec.KIND == 'feature':
         return saved['model']
     model = spec.build_model(saved['bin_sizes'])
