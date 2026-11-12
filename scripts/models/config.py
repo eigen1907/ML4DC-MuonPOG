@@ -1,10 +1,10 @@
-"""Shared study choices: cached inputs, fixed examples and five experiments."""
+"""Shared choices for cached inputs, fixed examples and four DCS-selected experiments."""
 
 from pathlib import Path
 
 
 OUT = Path("output")
-DIALS = OUT / "dataset/dials"
+DIALS = Path("data/dials")
 PROMPT_RECO_PATTERN = r"/Run2025[A-Z]-PromptReco-v\d+/DQMIO$"
 RR_DATA = Path("data/rr")
 DCS_PATH = Path("data/dcs/2025.json")
@@ -32,30 +32,29 @@ MODEL_MES = (
     "Muons__standAloneMuonsUpdatedAtVtx__HitProperties__NumberOfValidRecHitsPerTrack_sta",
 )
 
-BASE = "01_ae_2feat"
-BASE_DCS = "02_ae_2feat_dcs"
-HIST_DCS = "03_ae_hist_dcs"
-DM_DCS = "04_ae_dm_k1_dcs"
-DM_WINDOW = "05_ae_dm_k1_weighted_window"
+FEATURE_AE = "01_ae_2feat"
+HIST_AE = "02_ae_hist"
+DM_AE = "03_ae_dm_k1"
+WINDOW_AE = "04_ae_dm_k1_weighted_window"
 EXPERIMENTS = {
-    BASE: "Frozen historical mean/std AE; original unfiltered Good training",
-    BASE_DCS: "Same mean/std AE trained on Good DCS-pass LS; no entry cut",
-    HIST_DCS: "Native-histogram AE trained and scored with MSE; Good DCS-pass LS",
-    DM_DCS: "K=1 native-histogram DM AE; variance-weighted reconstruction score",
-    DM_WINDOW: "Same DM checkpoint; centered LS-window mean of its weighted score",
+    FEATURE_AE: "Mean/std AE trained on Good DCS-pass LS; no entry cut",
+    HIST_AE: "Native-histogram AE trained and scored with MSE; Good DCS-pass LS",
+    DM_AE: "K=1 native-histogram DM AE; variance-weighted reconstruction score",
+    WINDOW_AE: "Same DM checkpoint; centered LS-window mean of its weighted score",
 }
 
 
 def dials_folder(dataset, run, root=None):
     """Locate one cached DIALS dataset/run without a separate inventory file."""
-    root = DIALS if root is None else root
+    root = DIALS if root is None else Path(root)
     return root / dataset.strip("/").replace("/", "__") / str(run)
 
 
-def cached_runs():
+def cached_runs(root=None):
     """Find dataset/run folders containing Muon histograms, in stable order."""
+    root = DIALS if root is None else Path(root)
     rows = []
-    for folder in DIALS.glob("*/*"):
+    for folder in root.glob("*/*"):
         parts = folder.parent.name.split("__")
         if (not folder.is_dir() or not folder.name.isdigit() or int(folder.name) <= 0
                 or len(parts) != 3 or not all(parts)

@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 
-from scripts.config import cached_runs
+from scripts.models.config import cached_runs
 
 DATA = Path("data")
 OMS = "https://cmsoms.cern.ch/agg/api/v1/"

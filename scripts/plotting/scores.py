@@ -1,5 +1,7 @@
-"""CMS-style score and loss plots on a consecutive recorded-LS axis."""
+"""Plot saved LS scores and optional training losses; no model fitting."""
 
+import argparse
+import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -7,8 +9,10 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import mplhep as hep
 import numpy as np
+import pandas as pd
 
-from scripts.config import IDS, REGIONS
+from scripts.models.config import IDS, OUT, REGIONS
+from scripts.data.dials import load_run_labels
 
 
 BLUE, GREEN, RED, GREY = "#1769c2", "#cde8d1", "#f3bcbc", "#e0e0e0"
@@ -158,3 +162,50 @@ def plot_stage(scores, history, threshold, folder):
         ax.legend()
         hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="2025")
         save(fig, folder / "loss.png")
+
+
+def read_scores(folder):
+    """Use current RR display labels without changing stored scores or splits."""
+    scores = pd.read_parquet(folder / "scores.parquet")
+    try:
+        labels = load_run_labels()
+    except FileNotFoundError:
+        scores.loc[scores.label.str.startswith("bad_", na=False), "label"] = "bad"
+    else:
+        scores["label"] = scores.run_number.map(labels).fillna("unknown")
+    return scores
+
+
+def history_for(checkpoint):
+    from scripts.models.core import load_checkpoint
+
+    spec, saved, _ = load_checkpoint(checkpoint)
+    if spec.KIND == "window":
+        return None
+    if spec.KIND == "feature":
+        return dict(train=saved["train_losses"], validation=saved["validation_losses"],
+                    loss="Feature MSE")
+    return saved["history"]
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, required=True, help="Prediction directory")
+    parser.add_argument("--checkpoint", type=Path, help="Checkpoint file or directory for the loss curve")
+    parser.add_argument("--output", type=Path, help="Plot directory; default: output/plots/<input name>")
+    args = parser.parse_args()
+    metrics = json.loads((args.input / "metrics.json").read_text())
+    checkpoint = args.checkpoint
+    if checkpoint is None:
+        candidate = (args.input / metrics["checkpoint"] if metrics.get("checkpoint")
+                     else OUT / "model" / (metrics.get("experiment") or args.input.name))
+        if candidate.exists():
+            checkpoint = candidate
+    history = history_for(checkpoint) if checkpoint is not None else None
+    output = args.output or OUT / "plots" / args.input.name
+    plot_stage(read_scores(args.input), history, metrics["threshold"], output)
+    print("Saved plots to", output)
+
+
+if __name__ == "__main__":
+    main()

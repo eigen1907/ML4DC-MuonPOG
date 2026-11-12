@@ -2,14 +2,16 @@
 
 import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
 
-from scripts.config import (DCS_PATH, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
+from scripts.models.config import (DCS_PATH, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
                     REGIONS, RR_DATA, SEED, SPECIAL_RUNS, cached_runs, dials_folder)
+from scripts.models.preprocessing import _moments
 
 
 def _integers(values, dtype, description):
@@ -19,20 +21,6 @@ def _integers(values, dtype, description):
             or int(values.max(initial=0)) > np.iinfo(dtype).max):
         raise ValueError(f"Expected finite nonnegative integer {description}")
     return values.astype(dtype)
-
-
-def _moments(counts, low, high, eta=False):
-    """Historical 0–1 moments; eta is folded and an empty ME gives two zeros."""
-    low, high = float(low), float(high)
-    edges = np.linspace(low, high, counts.shape[1] + 1, dtype=np.float32)
-    centers = (edges[:-1] + edges[1:]) / 2
-    positions = np.abs(centers) / max(abs(low), abs(high)) if eta else (centers - low) / (high - low)
-    counts = counts.astype(np.float64)
-    totals = counts.sum(axis=1)
-    weights = np.divide(counts, totals[:, None], out=np.zeros_like(counts), where=totals[:, None] > 0)
-    mean = weights @ positions
-    std = np.sqrt((weights * (positions - mean[:, None]) ** 2).sum(axis=1))
-    return np.column_stack((mean, std))
 
 
 def load_dcs():
@@ -111,38 +99,50 @@ def load_run_labels():
     return labels.set_index("run_number").label
 
 
-def load_dataset():
+def load_dataset(root=DIALS, *, split=True):
     """Read each selected parquet once; skip runs missing a selected ME.
 
-    Split discovered runs before excluding incomplete caches. Native
+    Training splits discovered PromptReco runs before excluding incomplete caches.
+    Inference accepts any cached dataset with every row assigned to Test. Native
     signed bins, ROOT entries and in-range bin totals remain distinct. Only the
     historical moment representation folds eta. No DIALS calls are made.
     """
-    runs = pd.DataFrame(cached_runs(), columns=["dataset", "run_number"])
-    runs = runs.loc[runs.dataset.str.contains(PROMPT_RECO_PATTERN, na=False)].copy()
-    if runs.empty or runs.run_number.duplicated().any():
-        raise ValueError("Expected one cached PromptReco dataset per run")
-    labels = load_run_labels()
-    runs["label"] = runs.run_number.map(labels).fillna("unknown")
-    runs["era"] = runs.dataset.str.extract(r"Run(2025[A-Z])")[0]
-    good = runs[runs.label.eq("good")]
+    root = DIALS if root is None else Path(root)
+    runs = pd.DataFrame(cached_runs(root), columns=["dataset", "run_number"])
+    if split:
+        runs = runs.loc[runs.dataset.str.contains(PROMPT_RECO_PATTERN, na=False)].copy()
+    identifiers = ["run_number"] if split else ["dataset", "run_number"]
+    if runs.empty or runs.duplicated(identifiers).any():
+        raise ValueError("Expected nonempty unique cached dataset/run pairs")
     try:
-        train, holdout = train_test_split(good, train_size=.70, random_state=SEED, stratify=good.era)
-        validation, test = train_test_split(holdout, train_size=.5, random_state=SEED, stratify=holdout.era)
-    except ValueError as error:
-        raise ValueError("Not enough RR-labelled Good runs for the run-separated split; collect more RR metadata") from error
-    split = {"train": set(train.run_number), "validation": set(validation.run_number),
-             "test": set(test.run_number) | set(runs.loc[runs.label.ne("good"), "run_number"])}
-    ready = [all((dials_folder(row.dataset, row.run_number, root=DIALS) / f"{stem}.parquet").exists()
+        labels = load_run_labels()
+    except FileNotFoundError:
+        if split:
+            raise
+        labels = pd.Series(dtype="object")
+    runs["label"] = runs.run_number.map(labels).fillna("unknown")
+    runs["era"] = runs.dataset.str.extract(r"Run(20\d\d[A-Z])")[0].fillna("unknown")
+    if split:
+        good = runs[runs.label.eq("good")]
+        try:
+            train, holdout = train_test_split(good, train_size=.70, random_state=SEED, stratify=good.era)
+            validation, test = train_test_split(holdout, train_size=.5, random_state=SEED, stratify=holdout.era)
+        except ValueError as error:
+            raise ValueError("Not enough RR-labelled Good runs for the run-separated split; collect more RR metadata") from error
+        run_split = {"train": set(train.run_number), "validation": set(validation.run_number),
+                     "test": set(test.run_number) | set(runs.loc[runs.label.ne("good"), "run_number"])}
+    else:
+        run_split = {"train": set(), "validation": set(), "test": set(runs.run_number)}
+    ready = [all((dials_folder(row.dataset, row.run_number, root=root) / f"{stem}.parquet").exists()
                  for stem in MODEL_MES) for row in runs.itertuples()]
     expected_runs = len(runs)
     runs = runs.loc[ready].copy()
     if runs.empty:
-        raise ValueError("No complete PromptReco runs in the DIALS cache")
-    runs["ls_count"] = [pq.read_metadata(dials_folder(row.dataset, row.run_number, root=DIALS)
+        raise ValueError("No complete runs in the DIALS cache")
+    runs["ls_count"] = [pq.read_metadata(dials_folder(row.dataset, row.run_number, root=root)
                                          / f"{MODEL_MES[0]}.parquet").num_rows
                         for row in runs.itertuples()]
-    print(f"Using {len(runs)}/{expected_runs} complete PromptReco runs from the current cache", flush=True)
+    print(f"Using {len(runs)}/{expected_runs} complete runs from the current cache", flush=True)
     total_rows = int(runs.ls_count.sum())
     n_mes = len(MODEL_MES)
     eta_me = next(me for me in MODEL_MES if me.endswith("__GlbMuon_Glb_eta"))
@@ -153,7 +153,7 @@ def load_dataset():
     features = np.empty((total_rows, 2 * n_mes), dtype=np.float64)
     frames, start = [], 0
     for index, row in enumerate(runs.itertuples(), 1):
-        folder = dials_folder(row.dataset, row.run_number, root=DIALS)
+        folder = dials_folder(row.dataset, row.run_number, root=root)
         expected_ls, entries = None, {}
         stop = start + int(row.ls_count)
         for target, stem in enumerate(MODEL_MES):
@@ -202,7 +202,7 @@ def load_dataset():
         frame = pd.DataFrame({"dataset": row.dataset, "run_number": row.run_number,
                               "ls_number": expected_ls, "era": row.era, "eta_entries": entries[eta_me]})
         frame["label"] = row.label
-        frame["split"] = next(name for name, members in split.items() if row.run_number in members)
+        frame["split"] = next(name for name, members in run_split.items() if row.run_number in members)
         frames.append(frame)
         start = stop
         if index % 100 == 0:
@@ -213,7 +213,7 @@ def load_dataset():
             "root_entries": root_entries, "axes": axes,
             "features": features, "me_names": list(MODEL_MES),
             "run_split": {name: sorted(int(run) for run in members & set(runs.run_number))
-                          for name, members in split.items()}}
+                          for name, members in run_split.items()}}
 
 
 def validation_roles(frame):
