@@ -56,6 +56,8 @@ matrix, plus the 2024–2025 training loss curve. No year subfolders are used.
 Each model also gets `confusion_matrix.png`: DCS-selected, finite-score Good/Bad
 Test LS, with counts and row percentages at the fixed threshold. LS inherit their
 RR run labels; Unknown/unscored LS are excluded. This is not LS-level ground truth.
+`confusion_matrix_no2026C.png` also shows the Test after excluding 2026C, using
+the same threshold. Category labels remain; axis titles are omitted.
 
 DIALS collection uses the `muo` workspace and caches available per-LS `Muons/` 1D MEs from every matching Muon0 processing version. Availability is determined by the live listing; requesting a year does not imply that it is present. Existing valid Parquet files are reused.
 
