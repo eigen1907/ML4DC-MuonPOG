@@ -1,4 +1,4 @@
-"""Five AE comparisons on cached Muon histograms; DCS only, no entries cut."""
+"""Run five Muon AE experiments on cached histograms; no entries cut."""
 
 import argparse
 import json
@@ -12,9 +12,8 @@ from config import (BASE, BASE_DCS, DM_DCS, DM_WINDOW, EXPERIMENTS, HIST_DCS,
                     OUT, SEED, SPECIAL_RUNS, WINDOW_SIZE)
 from data import fingerprint, load_dataset, load_run_labels, validation_roles
 from models import HistogramAE, fit_base, fit_histogram, prepare
-from plots import plot_comparison, plot_stage
-from scoring import (QUANTILE, base_terms, calibrate, histogram_terms, require_alignment,
-                     summarize, window_mean)
+from plots import plot_stage
+from scoring import QUANTILE, base_terms, calibrate, histogram_terms, window_mean
 
 STAGES = tuple(EXPERIMENTS)
 MONITOR_LIMIT = 4096
@@ -34,29 +33,15 @@ def save_stage(stage, frame, terms, calibration, signature, values=None):
     folder = OUT/'predict'/stage
     folder.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(folder/'scores.parquet', index=False)
-    summary = summarize(scores)
     (folder/'metrics.json').write_text(json.dumps(dict(signature=signature, threshold=cut,
         quantile=QUANTILE, description=EXPERIMENTS[stage],
-        source_model=DM_DCS if stage == DM_WINDOW else stage, cohorts=summary,
+        source_model=DM_DCS if stage == DM_WINDOW else stage,
         training_selection=('Historical Good training LS, without DCS selection' if stage == BASE
                             else signature['selection']),
         interpretation='Exploratory LS score under RR run labels; not P(bad)'), indent=2)+'\n')
     plot_stage(scores, history_for(stage), cut, OUT/'plots'/stage)
-    print(stage, {r['cohort']: r['flagged_fraction'] for r in summary
-                  if r['cohort'] in ('test_good_standard', 'test_bad', 'A', 'B', 'C', 'D')}, flush=True)
-    return scores, cut
-
-
-def compare(frames, cuts):
-    """Compare aligned LS scores using one Bad category."""
-    require_alignment(frames, frames[BASE])
-    folder = OUT/'predict/comparison'
-    folder.mkdir(parents=True, exist_ok=True)
-    summary = pd.DataFrame([dict(stage=name, **row) for name, scores in frames.items()
-                            for row in summarize(scores)])
-    summary.to_csv(folder/'cohorts.csv', index=False)
-    plot_comparison(frames, cuts, OUT/'plots/comparison')
-    print(summary[summary.cohort.isin(('test_good_standard', 'test_bad'))].to_string(index=False), flush=True)
+    print(stage, 'complete', flush=True)
+    return scores
 
 
 def read_saved_scores(path):
@@ -72,13 +57,11 @@ def read_saved_scores(path):
 
 
 def draw_saved():
-    frames, cuts = {}, {}
     for stage in STAGES:
         folder = OUT/'predict'/stage
-        frames[stage] = read_saved_scores(folder/'scores.parquet')
-        cuts[stage] = json.loads((folder/'metrics.json').read_text())['threshold']
-        plot_stage(frames[stage], history_for(stage), cuts[stage], OUT/'plots'/stage)
-    compare(frames, cuts)
+        scores = read_saved_scores(folder/'scores.parquet')
+        cut = json.loads((folder/'metrics.json').read_text())['threshold']
+        plot_stage(scores, history_for(stage), cut, OUT/'plots'/stage)
 
 
 def main():
@@ -102,11 +85,6 @@ def main():
     fit_monitor = np.random.default_rng(SEED).choice(fit_monitor, min(MONITOR_LIMIT, len(fit_monitor)), replace=False)
     if (train & monitor).any() or (train & calibration).any() or (monitor & calibration).any():
         raise ValueError('Training, monitoring and calibration overlap')
-    for target in range(len(dataset['me_names'])):
-        frame[f'N_{target}'] = dataset['totals'][:, target]
-        frame[f'E_{target}'] = dataset['root_entries'][:, target]
-    minimum = np.where(dataset['totals'] > 0, dataset['totals'], np.inf).min(1)
-    frame['minimum_positive_N'] = np.where(np.isfinite(minimum), minimum, np.nan)
     signature = dict(version='five-ae-dcs-v1', data_fingerprint=fingerprint(dataset), seed=SEED,
                      selection='Good training runs AND DCS-pass; no entry/statistics cut',
                      training_ls=int(train.sum()), monitor_runs=roles['monitor_runs'],
@@ -133,21 +111,8 @@ def main():
                              torch.load(path, map_location='cpu', weights_only=False))
             if cached[stage].get('signature') != signature:
                 raise ValueError(f'{stage}: RR labels or training selection changed; existing results are preserved. Use --plots-only or start a separate fit')
-    (OUT/'predict').mkdir(parents=True, exist_ok=True)
-    (OUT/'predict/protocol.json').write_text(json.dumps({**signature, 'stages': list(STAGES),
-        'historical_base': original.get('origin', 'Preserved original checkpoint; not refitted'),
-        'me_names': dataset['me_names'], 'feature_names': features,
-        'bin_sizes': [h.shape[1] for h in dataset['histograms']],
-        'fit_monitor_ls': len(fit_monitor), 'calibration_ls': int(calibration.sum()),
-        'score': 'DM uses variance-weighted residuals; no count-rank calibration',
-        'window': dict(source=DM_DCS, size=WINDOW_SIZE, centered=True,
-                       reset_at=['dataset', 'run', 'LS gap', 'DCS state']),
-        'threshold': dict(quantile=QUANTILE, reference='Separate Good calibration LS'),
-        'dcs': 'Public tracker-ready snapshot, not a Muon quality label or Golden JSON',
-        'assessment': 'Reused Test is exploratory; labels come from RR summaries'}, indent=2)+'\n')
-    frames, cuts = {}, {}
     terms, values = base_terms(dataset['features'], original)
-    frames[BASE], cuts[BASE] = save_stage(BASE, frame, terms, calibration, signature, values)
+    save_stage(BASE, frame, terms, calibration, signature, values)
     path = OUT/'model'/BASE_DCS/'model.pkl'
     if path.exists():
         selected = cached[BASE_DCS]
@@ -158,8 +123,9 @@ def main():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(pickle.dumps(selected))
     terms, values = base_terms(dataset['features'], selected)
-    frames[BASE_DCS], cuts[BASE_DCS] = save_stage(BASE_DCS, frame, terms, calibration, signature, values)
+    save_stage(BASE_DCS, frame, terms, calibration, signature, values)
     inputs, scaler = prepare(dataset, train)
+    frames = {}
     for stage, distribution, score in ((HIST_DCS, 'mse', 'mse'), (DM_DCS, 'dm', 'weighted')):
         path = OUT/'model'/stage/'model.pt'
         if path.exists():
@@ -183,16 +149,13 @@ def main():
             torch.save(dict(signature=signature, state_dict=model.state_dict(), scaler=scaler, history=history,
                             bin_sizes=model.bin_sizes, me_names=dataset['me_names'], axes=dataset['axes']), path)
         terms = histogram_terms(model, inputs, dataset['histograms'])[score]
-        frames[stage], cuts[stage] = save_stage(stage, frame, terms, calibration, signature)
+        frames[stage] = save_stage(stage, frame, terms, calibration, signature)
     values = window_mean(frames[DM_DCS])
-    frames[DM_WINDOW], cuts[DM_WINDOW] = save_stage(DM_WINDOW, frame, values[:, None], calibration, signature, values)
+    save_stage(DM_WINDOW, frame, values[:, None], calibration, signature, values)
     (OUT/'model'/DM_WINDOW).mkdir(parents=True, exist_ok=True)
     (OUT/'model'/DM_WINDOW/'source.json').write_text(json.dumps(dict(
         source_model=DM_DCS, window=WINDOW_SIZE, centered=True), indent=2)+'\n')
-    compare(frames, cuts)
-    from diagnostics import write_diagnostics
-    write_diagnostics(dataset, frames, cuts)
-    print('Five-stage study complete:', OUT/'predict/comparison/cohorts.csv', flush=True)
+    print('Five-stage study complete:', OUT/'predict', flush=True)
 
 
 if __name__ == '__main__':

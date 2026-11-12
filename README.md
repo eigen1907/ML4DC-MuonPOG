@@ -1,84 +1,59 @@
 # ML4DC-MuonPOG
 
-Small Muon DQM anomaly-detection study. Metadata collection, cached histogram inspection and model experiments are separate steps.
+Small LS-level Muon DQM anomaly-detection study using cached DIALS histograms and CERN metadata.
 
-## Workflow
-
-```text
-runs/
-  01_metadata/   DCS, OMS and Run Registry collection
-  02_data/       cached ME plots
-  03_models/     five existing AE comparisons
-```
+## Run
 
 ```bash
 bash runs/01_metadata/dcs.sh
-bash runs/01_metadata/rr.sh --years 2025        # lxplus: CERN Kerberos/OTP
+bash runs/01_metadata/rr.sh --years 2025        # CERN Kerberos/OTP
 bash runs/01_metadata/oms.sh --runs 393240 396153 397332
 bash runs/02_data/plot_mes.sh
-bash runs/03_models/study.sh --plots-only      # redraw preserved results
-uv run --locked python -m unittest discover -s tests
+bash runs/03_models/study.sh --plots-only      # redraw saved results
+bash runs/03_models/study.sh                   # fit or reuse compatible checkpoints
 ```
 
-The metadata recipes use `.venv-metadata` with only acquisition dependencies. OMS uses personal CERN browser/device login. RR needs a valid Kerberos ticket (`klist -s`) and may prompt for OTP. Authentication caches stay outside the repository. Historical DIALS download scripts have been removed; existing histogram caches are preserved.
-
-## Metadata
-
-One entry point: `scripts/fetch_metadata.py dcs|oms|rr`.
-
-```text
-data/
-  dcs/{2023,2024,2025,2026}.json
-  oms/2025.json
-  rr/2025.json
-```
-
-| Source | JSON contents |
-|---|---|
-| DCS | Run → inclusive first/last LS of tracker-ready intervals |
-| OMS | `lumisections`: run/LS, start/end time, delivered/recorded LS luminosity, pile-up, stable beams and CMS active |
-| RR | `runs`: run number, deleted status and numeric status counts by component |
-
-OMS queries only the lumisections endpoint and requests nine attributes through the API `fields` parameter. Run and Fill queries, fill number, bunch counts and individual detector readiness bits are omitted for now. Only `*_per_lumisection` luminosity fields are retained; plain luminosity fields can be cumulative.
-
-Each source has one JSON per year, read directly by analysis code; there are no separate raw/summary copies or CSV exports. OMS and RR retain selected source values without scaling. API wrappers, workflow attributes, embedded Run information and comments are discarded. Public DCS JSONs remain unchanged and describe tracker readiness.
-
-RR defaults to the yearly PromptReco query (`--years 2025`). Components are cms, muon, dt, csc, rpc, gem, tracker_pixel, tracker_strip, tracking, ecal, hcal, hlt, l1t and lumi. The model loader derives labels from Muon counts: any BAD makes a run bad; exclusively GOOD makes it good; other, deleted or missing states remain unknown. Component counts do not retain the locations of bad LS.
-
-OMS accepts `--runs`; otherwise it uses the RR JSON run list restricted by the cached Muon0 catalogue when available. Missing runs are skipped. Downloads are combined in memory and written once per year. The current OMS 2025 file contains three sampled runs, not the full year. Among the 744 cached 2025 runs, RR provides 560 Good and 17 Bad; 167 are unassessed or missing and do not train or calibrate the models.
-
-The study reads `data/dcs/2025.json` and annual `data/rr/*.json` directly. OMS is collected for later studies and is not a model input yet.
-
-## Existing model experiments
-
-| Directory | Comparison |
-|---|---|
-| `01_ae_2feat` | Preserved original mean/std AE |
-| `02_ae_2feat_dcs` | Mean/std AE with DCS-selected Good training LS |
-| `03_ae_hist_dcs` | Native-histogram MSE AE |
-| `04_ae_dm_k1_dcs` | K=1 Dirichlet-multinomial AE with variance-weighted residuals |
-| `05_ae_dm_k1_weighted_window` | Stage 04 score averaged over a centered five-LS window |
-
-Eight MEs are used; OneHLT is excluded. There is no minimum-entry cut. Current training uses RR Good runs split by run into 70/15/15%, seed 42; Bad and unknown are test-only. Validation has separate monitoring/calibration runs, and finite Good calibration scores set the fixed 97.5th-percentile threshold. The five-LS window uses future LS and is an offline diagnostic.
-
-Existing checkpoints, scores, cuts and splits were produced with the earlier provisional labels and remain preserved. Redrawn plots use current RR labels, including unknown; historical labels are only a fallback when the RR JSON is absent. Fresh RR labels change training cohorts: the runner rejects incompatible checkpoints before writing results. A new fit needs an explicitly separate output/checkpoint choice; this cleanup does not retrain the models. Run labels are not LS-level truth, and reused Test results remain exploratory.
+Metadata recipes use `.venv-metadata` with only acquisition dependencies. OMS uses CERN device login; RR needs a Kerberos ticket and may prompt for OTP. Authentication caches stay outside the repository. Model recipes use `uv` and the existing local histogram cache; they do not download DIALS data.
 
 ## Files
 
-- `scripts/fetch_metadata.py`: metadata download to annual JSON files.
-- `scripts/data.py`: cached histogram loading, moments, RR labels and splits.
-- `scripts/models.py`: feature and histogram AEs.
-- `scripts/scoring.py`: residuals, calibration and LS windows.
-- `scripts/study.py`: explicit five-experiment runner.
-- `scripts/plot.py`, `plots.py`, `diagnostics.py`: raw MEs and model diagnostics.
-- `scripts/config.py`: shared study choices.
+```text
+data/
+  dcs/<year>.json                  tracker-ready run/LS intervals
+  oms/<year>.json                  selected LS conditions
+  rr/<year>.json                   component quality counts per run
+output/
+  dataset/dials/<dataset>/<run>/   ME Parquet files
+  model/<experiment>/             checkpoints
+  predict/<experiment>/           scores.parquet and metrics.json
+  plots/{mes,<experiment>}/       ME and model plots
+scripts/                          Python code
+runs/{01_metadata,02_data,03_models}/
+```
 
-`runs/` contains commands that perform real work. `tests/` contains small synthetic checks for pagination, raw preservation, labels, run separation and scoring; it does not download data or submit jobs.
+Dataset directory names encode `/` as `__`. Run lists and LS counts are read from the cache itself; no inventory or run-list file is needed. Generated data and results are ignored by Git.
 
-Generated metadata, caches, checkpoints and plots are ignored by Git. Existing histogram data is under `output/dataset/raw/`; results use `output/{model,predict,plots}/`. Dataset/provenance catalogues are under `output/dataset/catalogue/`.
+- `fetch_metadata.py`: DCS, OMS and RR downloads to annual JSON files.
+- `config.py`, `data.py`: study choices, cache discovery, ME loading, labels and splits.
+- `models.py`, `scoring.py`, `study.py`: model fitting, calibration and experiment execution.
+- `plot.py`, `plots.py`: ordinary ME plots and individual model score/loss plots.
 
-## DQMIO production status
+## Metadata
 
-Muon0 AOD is available for 2023–2026. The inspected global DBS catalogue has no full RECO tier; RAW-RECO datasets are skims. An AOD-compatible Muon sequence can produce DQMIO, but complete reproduction of every `Muons/` 1D/2D ME is still unverified because some inputs may be missing.
+DCS preserves the public JSON bytes and describes tracker readiness, not Muon certification. OMS stores nine LS attributes: run/LS, start/end time, delivered/recorded LS luminosity, pile-up, stable beams and CMS active. Run/Fill queries are omitted. The current OMS 2025 file contains three sampled runs; OMS is not a model input yet.
 
-The next production step is one AOD file's product/reference check and a short discovery job. Enumerate actual booked `Muons/` paths, configure per-LS saving, and verify ME coverage and noncumulative contents across two LS before scaling up. No DQMIO production job has run yet.
+RR stores run number, deleted status and numeric quality counts for 14 components. Model labels are derived directly from Muon counts: any BAD gives Bad, exclusively GOOD gives Good, and deleted, incomplete or missing assessments remain Unknown. Counts do not retain the locations of bad LS. OMS uses `--runs` or the saved RR run list, restricted to cached Muon0 runs when available.
+
+## Experiments
+
+| Directory | Model |
+|---|---|
+| `01_ae_2feat` | Preserved historical mean/std AE |
+| `02_ae_2feat_dcs` | Mean/std AE with DCS-selected Good training LS |
+| `03_ae_hist_dcs` | Full-histogram MSE AE |
+| `04_ae_dm_k1_dcs` | K=1 Dirichlet-multinomial AE with variance-weighted residuals |
+| `05_ae_dm_k1_weighted_window` | Stage 04 scores averaged over a centered five-LS window |
+
+Eight MEs are used; OneHLT is excluded. There is no entry cut. RR Good runs are split 70/15/15% by run with seed 42; Bad and Unknown are test-only. Validation is separated into monitoring and calibration runs. The fixed threshold is the 97.5th percentile of finite Good calibration scores. The centered window uses future LS and is an offline study.
+
+Saved checkpoints, scores and splits remain historical results from provisional labels. Redrawing applies current RR display labels; fitting rejects incompatible checkpoints rather than overwriting them. Run labels are not LS-level truth, and the reused Test set remains exploratory.

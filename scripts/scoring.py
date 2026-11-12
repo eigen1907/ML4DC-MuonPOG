@@ -1,10 +1,10 @@
-"""Shared residuals, fixed Good calibration, LS context and cohort summaries."""
+"""Shared residuals, fixed Good calibration and LS context."""
 
 import numpy as np
 import pandas as pd
 import torch
 
-from config import IDS, REGIONS, SPECIAL_RUNS, WINDOW_SIZE
+from config import IDS, WINDOW_SIZE
 from models import BATCH_SIZE, residuals
 
 
@@ -66,24 +66,6 @@ def calibrate(frame, terms, calibration, values=None):
     return scores, cut
 
 
-def require_alignment(frames, frame):
-    """Reject changed LS coverage, splits, labels, selection or cached counts."""
-    expected = frame.set_index(IDS)
-    if not expected.index.is_unique:
-        raise ValueError('Duplicate cached LS identifiers')
-    columns = ['label', 'split', 'dcs_pass'] + [name for name in frame
-                                             if name.startswith('N_') and name[2:].isdigit()]
-    for name, values in frames.items():
-        actual = values.set_index(IDS)
-        if (not actual.index.is_unique or len(actual) != len(expected)
-                or len(expected.index.difference(actual.index))):
-            raise ValueError(f'{name}: LS identifiers differ from the reference')
-        if (not set(columns).issubset(actual.columns)
-                or not np.array_equal(actual.reindex(expected.index)[columns].to_numpy(),
-                                      expected[columns].to_numpy())):
-            raise ValueError(f'{name}: split, labels, selection or counts changed')
-
-
 def window_mean(scores):
     """Offline centered five-LS mean; reset at dataset/run/gap/DCS boundaries.
 
@@ -101,23 +83,3 @@ def window_mean(scores):
             values = segment.anomaly_score.rolling(WINDOW_SIZE, center=True, min_periods=1).mean()
             result[segment.index] = values.where(segment.anomaly_score.notna())
     return result
-
-
-def summarize(scores):
-    """Descriptive LS fractions under run labels, never LS truth or run metrics."""
-    test = scores.split.eq('test')
-    standard = test & scores.label.eq('good') & ~scores.run_number.isin(SPECIAL_RUNS)
-    groups = {'test_good_standard': standard,
-              'test_bad': test & scores.label.eq('bad'),
-              'test_unknown': test & scores.label.eq('unknown')}
-    groups.update({name: test & scores.run_number.isin(runs) for name, runs in REGIONS.items()})
-    for name, low, high in [('N1_10', 0, 10), ('N11_100', 10, 100), ('Ngt100', 100, np.inf)]:
-        groups[name] = standard & scores.minimum_positive_N.gt(low) & scores.minimum_positive_N.le(high)
-    rows = []
-    for name, group in groups.items():
-        included = group & scores.dcs_pass
-        valid = included & scores.anomaly_score.notna()
-        flagged = int(scores.loc[valid, 'flagged'].sum())
-        rows.append({'cohort': name, 'included_ls': int(included.sum()), 'scored_ls': int(valid.sum()),
-                     'flagged_ls': flagged, 'flagged_fraction': flagged / valid.sum() if valid.any() else None})
-    return rows

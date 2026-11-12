@@ -1,4 +1,4 @@
-"""Small CMS-style diagnostics on a shared, consecutive recorded-LS axis."""
+"""CMS-style score and loss plots on a consecutive recorded-LS axis."""
 
 from pathlib import Path
 
@@ -7,14 +7,11 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import mplhep as hep
 import numpy as np
-import pandas as pd
 
-from config import IDS, REGIONS, SPECIAL_RUNS
+from config import IDS, REGIONS
 
 
 BLUE, GREEN, RED, GREY = "#1769c2", "#cde8d1", "#f3bcbc", "#e0e0e0"
-COUNT_BINS = (("0", -.5, 0), ("1–10", 0, 10),
-              ("11–100", 10, 100), (">100", 100, np.inf))
 
 
 def save(fig, path):
@@ -161,102 +158,3 @@ def plot_stage(scores, history, threshold, folder):
         ax.legend()
         hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="2025")
         save(fig, folder / "loss.png")
-
-
-def _aligned_test(frames):
-    """Use the union of DCS-pass test IDs so missing model scores leave gaps."""
-    selected = {name: _ordered(frame.loc[frame.split.eq("test")]) for name, frame in frames.items()}
-    count_columns = list(next(iter(selected.values())).filter(regex=r"^N_\d+$"))
-    metadata = IDS + ["label", "split", "dcs_pass"] + count_columns
-    common = pd.concat([frame[metadata] for frame in selected.values()], ignore_index=True)
-    if common.groupby(IDS)[["label", "split"]].nunique().gt(1).any().any():
-        raise ValueError("Experiment labels/splits disagree for the same LS")
-    common = common.drop_duplicates(IDS).sort_values(
-        ["run_number", "ls_number", "dataset"]).reset_index(drop=True)
-    index = pd.MultiIndex.from_frame(common[IDS])
-    aligned = {}
-    for name, frame in selected.items():
-        aligned[name] = common.copy()
-        aligned[name]["anomaly_score"] = frame.set_index(IDS).anomaly_score.reindex(index).to_numpy()
-    return aligned
-
-
-def _lowstat_rates(scores, threshold):
-    """Conditional flag fractions; all-empty and unscored LS remain counted."""
-    good = scores.loc[scores.split.eq("test") & scores.label.eq("good") & scores.dcs_pass
-                      & ~scores.run_number.isin(SPECIAL_RUNS)]
-    counts = good.filter(regex=r"^N_\d+$").to_numpy(dtype=float, na_value=np.nan)
-    minimum = np.where(counts > 0, counts, np.inf).min(axis=1)
-    minimum[np.isinf(minimum)] = 0
-    minimum[~np.isfinite(counts).all(axis=1)] = np.nan
-    values = _values(good, threshold)
-    rows = []
-    for name, low, high in (*COUNT_BINS, ("Unknown N", None, None)):
-        selected = ~np.isfinite(minimum) if low is None else (minimum > low) & (minimum <= high)
-        scored = selected & np.isfinite(values)
-        rows.append(dict(bin=name, recorded=int(selected.sum()), scored=int(scored.sum()),
-                         fraction=float(np.mean(values[scored] > 1)) if scored.any() else np.nan))
-    return pd.DataFrame(rows).set_index("bin")
-
-
-def plot_comparison(frames, thresholds, folder):
-    """Aligned test panels and low-statistics standard-Good flag fractions."""
-    if len(frames) < 2 or set(frames) != set(thresholds):
-        raise ValueError("Provide at least two experiments and one threshold for each")
-    hep.style.use("CMS")
-    folder = Path(folder)
-    aligned = _aligned_test(frames)
-    values = {name: _values(scores, thresholds[name]) for name, scores in aligned.items()}
-    for log in (False, True):
-        fig, axes = plt.subplots(len(frames), 1, sharex=True, sharey=True,
-                                 figsize=(11, max(8, 3 * len(frames))), layout="constrained")
-        for ax, (name, scores) in zip(axes, aligned.items()):
-            _axis(ax, scores, values[name], log=log, regions=True)
-            ax.set_xlabel("")
-            ax.set_ylabel("")
-            ax.text(.99, .95, name, transform=ax.transAxes, ha="right", va="top",
-                    bbox={"facecolor": "white", "edgecolor": "none", "alpha": .9})
-        if log:
-            axes[0].set_ylim(_limits(np.concatenate(list(values.values()))))
-        axes[-1].set_xlabel("Run number")
-        fig.supylabel("Anomaly score / threshold")
-        fig.legend(handles=_handles(any(frame.label.eq("unknown").any() for frame in aligned.values())),
-                   loc="outside upper center", ncol=4)
-        hep.cms.label(ax=axes[0], text="Work in Progress", data=True, com=None, rlabel="Test")
-        save(fig, folder / ("test_log.png" if log else "test.png"))
-    tables = {name: _lowstat_rates(scores, thresholds[name]) for name, scores in aligned.items()}
-    bins = [name for name in next(iter(tables.values())).index
-            if name not in ("0", "Unknown N")
-            or any(table.loc[name, "recorded"] for table in tables.values())]
-    fig, ax = plt.subplots(figsize=(11, 7), layout="constrained")
-    for name, table in tables.items():
-        selected = table.loc[bins]
-        ax.plot(np.arange(len(bins)), selected.fraction, marker="o", label=name)
-    recorded = next(iter(tables.values())).loc[bins, "recorded"]
-    labels = [f"{'All empty' if name == '0' else name}\n({n:,} LS)" for name, n in recorded.items()]
-    ax.set_xticks(np.arange(len(bins)), labels)
-    peak = max([value for table in tables.values() for value in table.fraction if np.isfinite(value)] + [.05])
-    ax.set(xlabel="Minimum positive ME count N", ylabel="Flagged fraction of scored LS",
-           ylim=(0, min(1.05, peak * 1.25)))
-    ax.legend()
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="Standard Good test")
-    save(fig, folder / "lowstats.png")
-
-
-def plot_run_trend(ls, counts, mean_pt, scores, path, label):
-    """Show named count and score series alongside the physical mean pT."""
-    hep.style.use("CMS")
-    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(11, 11), layout="constrained")
-    for count_label, values in counts.items():
-        axes[0].plot(ls, np.where(values > 0, values, np.nan), label=count_label)
-    axes[0].set(yscale="log", ylabel="Counts / LS")
-    axes[0].legend(loc="lower left")
-    for model_label, values in scores.items():
-        axes[1].scatter(ls, values, s=4, alpha=.4, linewidths=0, label=model_label)
-    axes[1].axhline(1, color="black", linestyle="--")
-    axes[1].set(ylabel="Score / threshold", ylim=(0, 5))
-    axes[1].legend(loc="upper left", ncol=3)
-    axes[2].scatter(ls, mean_pt, s=4, alpha=.4, linewidths=0, color=BLUE)
-    axes[2].set(xlabel="Lumisection", ylabel=r"Mean muon $p_T$ [GeV]")
-    hep.cms.label(ax=axes[0], text="Work in Progress", data=True, com=None, rlabel=label)
-    save(fig, path)
