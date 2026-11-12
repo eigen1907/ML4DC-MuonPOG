@@ -183,7 +183,8 @@ def main():
         model, history = fit_histogram(dataset, inputs, context['train'], context['monitor_indices'], spec)
         saved = dict(state_dict=model.state_dict(), scaler=scaler, history=history, bin_sizes=model.bin_sizes)
     saved.update(experiment=spec.NAME, signature=context['signature'], run_split=dataset['run_split'],
-                 features=context['features'], me_names=dataset['me_names'], axes=dataset['axes'])
+                 features=context['features'], me_names=dataset['me_names'], axes=dataset['axes'],
+                 training_years=sorted(context['frame'].dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist()))
     # Calibration is part of training; prediction only reuses this fixed cut.
     from scripts.predict import predict_terms
     terms, values = predict_terms(spec, saved, dataset)
@@ -195,7 +196,7 @@ def main():
         pointer = dict(experiment=spec.NAME, source=os.path.relpath(source_file.resolve(), folder.resolve()),
                        source_model=source_spec.NAME, window=spec.WINDOW, centered=True,
                        threshold=threshold, quantile=QUANTILE, signature=context['signature'],
-                       run_split=dataset['run_split'])
+                       run_split=dataset['run_split'], training_years=saved['training_years'])
         temporary.write_text(json.dumps(pointer, indent=2)+'\n')
     elif spec.KIND == 'feature':
         temporary.write_bytes(pickle.dumps(saved))

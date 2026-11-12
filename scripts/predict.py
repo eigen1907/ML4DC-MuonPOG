@@ -41,13 +41,13 @@ def predict_terms(spec, saved, dataset):
     return terms, None
 
 
-def predict(checkpoint, data, output=None, *, years=None):
+def predict(checkpoint, data, output=None, *, years=None, prompt_reco=False):
     spec, saved, checkpoint = load_checkpoint(checkpoint)
     cut = threshold_for(checkpoint, saved, spec)
     output = Path(output) if output is not None else OUT/'predict'/spec.NAME
     if (output/'scores.parquet').exists() or (output/'metrics.json').exists():
         raise FileExistsError(f'{output}: saved predictions exist; choose a different --output directory')
-    dataset = load_dataset(Path(data), split=False, years=years)
+    dataset = load_dataset(Path(data), split=False, years=years, prompt_reco=prompt_reco)
     terms, values = predict_terms(spec, saved, dataset)
     values = mean_score(terms) if values is None else np.asarray(values, dtype=float)
     scores = dataset['frame'].copy()
@@ -62,7 +62,9 @@ def predict(checkpoint, data, output=None, *, years=None):
     scores.to_parquet(output/'scores.parquet', index=False)
     metrics = dict(experiment=spec.NAME, threshold=cut, quantile=saved.get('quantile', QUANTILE),
                    checkpoint=os.path.relpath(checkpoint.resolve(), output.resolve()),
-                   description=EXPERIMENTS[spec.NAME], signature=saved.get('signature'))
+                   description=EXPERIMENTS[spec.NAME], signature=saved.get('signature'),
+                   years=sorted(scores.dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist()),
+                   prompt_reco=prompt_reco)
     (output/'metrics.json').write_text(json.dumps(metrics, indent=2)+'\n')
     print(f'Saved {len(scores):,} LS to {output}; fixed threshold = {cut:.6g}', flush=True)
     return scores
@@ -74,9 +76,10 @@ def main():
     parser.add_argument('--data', type=Path, required=True, help='DIALS cache root containing dataset/run folders')
     parser.add_argument('--output', type=Path, help='Prediction directory; existing scores are preserved')
     parser.add_argument('--years', type=int, nargs='+', help='Use only these cached years; default: all')
+    parser.add_argument('--prompt-reco', action='store_true', help='Match the PromptReco-only training cohort')
     args = parser.parse_args()
     torch.set_num_threads(4)
-    predict(args.checkpoint, args.data, args.output, years=args.years)
+    predict(args.checkpoint, args.data, args.output, years=args.years, prompt_reco=args.prompt_reco)
 
 
 if __name__ == '__main__':

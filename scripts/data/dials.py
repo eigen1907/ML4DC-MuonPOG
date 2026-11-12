@@ -119,18 +119,19 @@ def load_run_labels(years=None):
     return labels.set_index("run_number").label
 
 
-def load_dataset(root=DIALS, *, split=True, years=None):
+def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False):
     """Read each selected parquet once; skip runs missing a selected ME.
 
     Training splits discovered Muon0 PromptReco runs before excluding incomplete caches.
     Each physical run must have one processing to avoid duplicated training LS.
-    Inference accepts any cached dataset with every row assigned to Test. Native
+    Inference accepts any cached dataset unless prompt_reco is requested, with
+    every row initially assigned to Test. Native
     signed bins, ROOT entries and in-range bin totals remain distinct. Only the
     historical moment representation folds eta. No DIALS calls are made.
     """
     root = DIALS if root is None else Path(root)
     runs = pd.DataFrame(cached_runs(root), columns=["dataset", "run_number"])
-    if split:
+    if split or prompt_reco:
         runs = runs.loc[runs.dataset.str.contains(PROMPT_RECO_PATTERN, na=False)].copy()
     run_years = runs.dataset.str.extract(r"/Run(20\d\d)")[0]
     if years is not None:
@@ -141,10 +142,10 @@ def load_dataset(root=DIALS, *, split=True, years=None):
     if run_years.isna().any():
         raise ValueError("Cannot determine DCS year from a cached dataset name")
     selected_years = sorted(run_years.astype(int).unique().tolist())
-    if split and runs.run_number.duplicated(keep=False).any():
+    if (split or prompt_reco) and runs.run_number.duplicated(keep=False).any():
         repeated = runs.loc[runs.run_number.duplicated(keep=False), ["run_number", "dataset"]]
         raise ValueError("Multiple PromptReco processings for the same run; select one cache processing "
-                         "before training:\n" + repeated.to_string(index=False))
+                         "per run:\n" + repeated.to_string(index=False))
     if split:
         labels = load_run_labels(selected_years)
     else:
