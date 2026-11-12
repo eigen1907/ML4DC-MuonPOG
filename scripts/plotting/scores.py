@@ -44,6 +44,15 @@ def _limits(values):
     return positive.min() * .8, positive.max() * 1.25
 
 
+def _years(frame):
+    return sorted(frame.dataset.str.extract(r"/Run(20\d\d)", expand=False).dropna().unique())
+
+
+def _period(years):
+    years = sorted({str(year) for year in years})
+    return "–".join(years) if len(years) <= 2 else ", ".join(years)
+
+
 def _axis(ax, frame, values, *, log=False):
     runs, positions = [], []
     for run, group in frame.groupby("run_number", sort=False):
@@ -87,7 +96,7 @@ def score_view(frame, threshold, path, *, label="Test", log=False):
     save(fig, path)
 
 
-def _distribution(frame, threshold, path, log):
+def _distribution(frame, threshold, path, log, *, label="Test"):
     values = _values(frame, threshold)
     limits = _limits(values) if log else (0, 5)
     bins = np.geomspace(*limits, 61) if log else np.linspace(*limits, 61)
@@ -97,15 +106,15 @@ def _distribution(frame, threshold, path, log):
         scored = np.isfinite(selected)
         visible = scored & ((selected > 0) if log else True)
         if scored.any():
-            label = f"{status.title()} ({scored.sum():,})"
+            legend_label = f"{status.title()} ({scored.sum():,})"
             ax.hist(selected[visible], bins=bins, weights=np.full(visible.sum(), 1 / scored.sum()),
-                    histtype="step", linewidth=2, color=color, label=label)
+                    histtype="step", linewidth=2, color=color, label=legend_label)
     ax.axvline(1, color="black", linestyle="--", label="Threshold")
     ax.set(xlabel="Score", ylabel="Fraction", xlim=limits)
     if log:
         ax.set_xscale("log")
     ax.legend()
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel="Test")
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
     save(fig, path)
 
 
@@ -114,10 +123,12 @@ def plot_stage(scores, history, threshold, folder):
     hep.style.use("CMS")
     folder = Path(folder)
     test = _ordered(scores.loc[scores.split.eq("test")])
+    period = _period(_years(test))
+    test_label = f"{period} Test" if period and period != "2025" else "Test"
     for log in (False, True):
         suffix = "_log" if log else ""
-        score_view(test, threshold, folder / f"test{suffix}.png", log=log)
-        _distribution(test, threshold, folder / f"distributions{suffix}.png", log)
+        score_view(test, threshold, folder / f"test{suffix}.png", label=test_label, log=log)
+        _distribution(test, threshold, folder / f"distributions{suffix}.png", log, label=test_label)
     if history is not None:
         fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")
         for key, label in (("train", "Train"), ("validation", "Validation")):
@@ -128,7 +139,14 @@ def plot_stage(scores, history, threshold, folder):
         ax.set(xlabel="Epoch", ylabel="Loss")
         ax.legend()
         source = history.get("source_model")
-        label = f"Shared with {source.split('_', 1)[0]}" if source else "2025"
+        years = history.get("training_years")
+        if years is None:
+            years = _years(scores.loc[scores.split.isin(("train", "validation"))])
+        period = _period(years)
+        label = period or "Training"
+        if source:
+            shared = f"Shared with {source.split('_', 1)[0]}"
+            label = f"{period} · {shared}" if period and period != "2025" else shared
         hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
         save(fig, folder / "loss.png")
 
@@ -150,11 +168,14 @@ def history_for(checkpoint):
 
     spec, saved, _ = load_checkpoint(checkpoint)
     if spec.KIND == "window":
-        return dict(saved["history"], source_model=saved["source_model"])
-    if spec.KIND == "feature":
-        return dict(train=saved["train_losses"], validation=saved["validation_losses"],
-                    loss="Feature MSE")
-    return saved["history"]
+        history = dict(saved["history"], source_model=saved["source_model"])
+    elif spec.KIND == "feature":
+        history = dict(train=saved["train_losses"], validation=saved["validation_losses"],
+                       loss="Feature MSE")
+    else:
+        history = dict(saved["history"])
+    history["training_years"] = saved.get("training_years") or (saved.get("signature") or {}).get("training_years")
+    return history
 
 
 def main():
