@@ -975,7 +975,6 @@ kerberos = [
     { name = "tsgauth", extra = ["kerb"] },
 ]
 metadata = [
-    { name = "pandas" },
     { name = "requests" },
     { name = "truststore" },
     { name = "tsgauth" },
@@ -997,7 +996,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 kerberos = [{ name = "tsgauth", extras = ["kerb"], specifier = "==0.12.0" }]
 metadata = [
-    { name = "pandas" },
     { name = "requests" },
     { name = "truststore" },
     { name = "tsgauth", specifier = "==0.12.0" },

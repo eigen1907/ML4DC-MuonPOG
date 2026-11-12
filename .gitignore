@@ -12,12 +12,7 @@ __pycache__/
 /data/dcs/*
 /data/oms/*
 /data/rr/*
-!/data/*/raw/
-!/data/*/summary/
-/data/*/raw/*
-/data/*/summary/*
-!/data/*/raw/.gitkeep
-!/data/*/summary/.gitkeep
+!/data/*/.gitkeep
 /output/*
 !/output/dataset/
 !/output/model/

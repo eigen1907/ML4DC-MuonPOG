@@ -27,26 +27,27 @@ The metadata recipes use `.venv-metadata` with only acquisition dependencies. OM
 One entry point: `scripts/fetch_metadata.py dcs|oms|rr`.
 
 ```text
-data/{dcs,oms,rr}/
-  raw/<year>.json       annual API data
-  summary/<year>.csv    annual table for inspection and analysis
+data/
+  dcs/{2023,2024,2025,2026}.json
+  oms/2025.json
+  rr/2025.json
 ```
 
-| Source | Summary contents |
+| Source | JSON contents |
 |---|---|
-| DCS | Run and inclusive first/last LS of tracker-ready intervals |
-| OMS | One row per LS: run/LS, start/end time, delivered/recorded LS luminosity, pile-up, stable beams and CMS active |
-| RR | One row per run and one column per main component: good/bad/unknown |
+| DCS | Run → inclusive first/last LS of tracker-ready intervals |
+| OMS | `lumisections`: run/LS, start/end time, delivered/recorded LS luminosity, pile-up, stable beams and CMS active |
+| RR | `runs`: run number, deleted status and numeric status counts by component |
 
 OMS queries only the lumisections endpoint and requests nine attributes through the API `fields` parameter. Run and Fill queries, fill number, bunch counts and individual detector readiness bits are omitted for now. Only `*_per_lumisection` luminosity fields are retained; plain luminosity fields can be cumulative.
 
-Raw means selected source values, not a full HTTP archive: OMS stores only those nine LS attributes; RR stores run number, deleted status and numeric status counts for the 14 selected components. API wrappers, workflow attributes, embedded Run information and comments are discarded. The RR endpoint returns broader records over the network, but only the selected values are kept. Summary CSVs flatten OMS rows or convert RR counts to verdicts. Public DCS JSONs remain unchanged and describe tracker readiness.
+Each source has one JSON per year, read directly by analysis code; there are no separate raw/summary copies or CSV exports. OMS and RR retain selected source values without scaling. API wrappers, workflow attributes, embedded Run information and comments are discarded. Public DCS JSONs remain unchanged and describe tracker readiness.
 
-RR defaults to the yearly PromptReco query (`--years 2025`). Its CSV has run_number plus cms, muon, dt, csc, rpc, gem, tracker_pixel, tracker_strip, tracking, ecal, hcal, hlt, l1t and lumi columns. Any BAD LS makes that component bad; exclusively GOOD makes it good; other or missing states remain unknown. This table supplies run labels, not the locations of bad LS. Model labels use the muon column from the annual CSVs.
+RR defaults to the yearly PromptReco query (`--years 2025`). Components are cms, muon, dt, csc, rpc, gem, tracker_pixel, tracker_strip, tracking, ecal, hcal, hlt, l1t and lumi. The model loader derives labels from Muon counts: any BAD makes a run bad; exclusively GOOD makes it good; other, deleted or missing states remain unknown. Component counts do not retain the locations of bad LS.
 
-OMS accepts `--runs`; otherwise it uses the RR run list restricted by the cached Muon0 catalogue when available. Missing runs are skipped. Downloads are combined in memory and written once per year. Add `--offline --years 2025` to rebuild an annual CSV without login. The current OMS 2025 file contains three sampled runs, not the full year. Among the 744 cached 2025 runs, RR provides 560 Good and 17 Bad; 167 are unassessed or missing and do not train or calibrate the models.
+OMS accepts `--runs`; otherwise it uses the RR JSON run list restricted by the cached Muon0 catalogue when available. Missing runs are skipped. Downloads are combined in memory and written once per year. The current OMS 2025 file contains three sampled runs, not the full year. Among the 744 cached 2025 runs, RR provides 560 Good and 17 Bad; 167 are unassessed or missing and do not train or calibrate the models.
 
-The study reads the ordinary `data/dcs/raw/2025.json`. Its bytes match the former reference, so removing the duplicate does not change the DCS selection.
+The study reads `data/dcs/2025.json` and annual `data/rr/*.json` directly. OMS is collected for later studies and is not a model input yet.
 
 ## Existing model experiments
 
@@ -60,11 +61,11 @@ The study reads the ordinary `data/dcs/raw/2025.json`. Its bytes match the forme
 
 Eight MEs are used; OneHLT is excluded. There is no minimum-entry cut. Current training uses RR Good runs split by run into 70/15/15%, seed 42; Bad and unknown are test-only. Validation has separate monitoring/calibration runs, and finite Good calibration scores set the fixed 97.5th-percentile threshold. The five-LS window uses future LS and is an offline diagnostic.
 
-Existing checkpoints, scores, cuts and splits were produced with the earlier provisional labels and remain preserved. Redrawn plots use current RR labels, including unknown; historical labels are only a fallback when the RR summary is absent. Fresh RR labels change training cohorts: the runner rejects incompatible checkpoints before writing results. A new fit needs an explicitly separate output/checkpoint choice; this cleanup does not retrain the models. Run labels are not LS-level truth, and reused Test results remain exploratory.
+Existing checkpoints, scores, cuts and splits were produced with the earlier provisional labels and remain preserved. Redrawn plots use current RR labels, including unknown; historical labels are only a fallback when the RR JSON is absent. Fresh RR labels change training cohorts: the runner rejects incompatible checkpoints before writing results. A new fit needs an explicitly separate output/checkpoint choice; this cleanup does not retrain the models. Run labels are not LS-level truth, and reused Test results remain exploratory.
 
 ## Files
 
-- `scripts/fetch_metadata.py`: metadata download and CSV extraction.
+- `scripts/fetch_metadata.py`: metadata download to annual JSON files.
 - `scripts/data.py`: cached histogram loading, moments, RR labels and splits.
 - `scripts/models.py`: feature and histogram AEs.
 - `scripts/scoring.py`: residuals, calibration and LS windows.

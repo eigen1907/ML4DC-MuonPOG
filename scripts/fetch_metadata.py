@@ -1,6 +1,7 @@
-"""Collect yearly DCS, OMS and Run Registry JSON and compact CSV tables."""
+"""Collect one compact JSON file per source and year."""
 
 import argparse
+import csv
 from datetime import datetime
 import json
 import os
@@ -8,7 +9,6 @@ from pathlib import Path
 import sys
 from urllib.parse import parse_qsl, urlsplit
 
-import pandas as pd
 import requests
 
 DATA = Path("data")
@@ -42,8 +42,8 @@ def json_response(response):
     return json.loads(response.content)
 
 
-def raw_path(source, year):
-    return DATA/source/"raw"/f"{year}.json"
+def metadata_path(source, year):
+    return DATA/source/f"{year}.json"
 
 
 def write_json(path, value):
@@ -51,18 +51,6 @@ def write_json(path, value):
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(value, indent=2) + "\n")
     temporary.replace(path)
-
-
-def write_csv(frame, source, year):
-    folder = DATA/source/"summary"
-    folder.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(folder/f"{year}.csv", index=False)
-    return frame
-
-
-def annual_years(source):
-    return sorted(int(path.stem) for path in (DATA/source/"raw").glob("*.json")
-                  if path.stem.isdigit() and len(path.stem) == 4)
 
 
 def dcs_url(year):
@@ -75,19 +63,15 @@ def dcs_url(year):
     return base + f"Collisions{short}/DCSOnly_JSONS/dailyDCSOnlyJSON/Collisions{short}_13p6TeV_Latest.json"
 
 
-def dcs_collect(years, *, offline=False, session=None):
+def dcs_collect(years, *, session=None):
     """Public tracker-ready intervals; preserve downloaded JSON bytes."""
     session = session or requests.Session()
     for year in years:
-        path = raw_path("dcs", year)
-        if offline:
-            payload = json.loads(path.read_bytes())
-        else:
-            response = session.get(dcs_url(year), timeout=60)
-            payload = json_response(response)
+        path = metadata_path("dcs", year)
+        response = session.get(dcs_url(year), timeout=60)
+        payload = json_response(response)
         if not isinstance(payload, dict) or not payload:
             raise ValueError("Expected nonempty DCS run/LS intervals")
-        rows = []
         for run, ranges in payload.items():
             if not str(run).isdigit() or int(run) <= 0 or not isinstance(ranges, list):
                 raise ValueError("Invalid DCS run")
@@ -95,11 +79,8 @@ def dcs_collect(years, *, offline=False, session=None):
                 if (not isinstance(pair, list) or len(pair) != 2
                         or any(type(x) is not int for x in pair) or not 0 < pair[0] <= pair[1]):
                     raise ValueError("Invalid inclusive DCS LS range")
-                rows.append((int(run), *pair))
-        if not offline:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(response.content)
-        write_csv(pd.DataFrame(rows, columns=["run_number", "first_ls", "last_ls"]), "dcs", year)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(response.content)
 
 
 def oms_pages(session, endpoint, query):
@@ -129,20 +110,11 @@ def oms_pages(session, endpoint, query):
         params = {**query, **pagination}
 
 
-def oms_table(payload):
-    frame = pd.DataFrame(payload["lumisections"], columns=OMS_FIELDS)
-    frame = frame.rename(columns={"lumisection_number": "ls_number"})
-    if (frame[["run_number", "ls_number"]].isna().any().any()
-            or (frame[["run_number", "ls_number"]] <= 0).any().any()
-            or frame.duplicated(["run_number", "ls_number"]).any()):
+def validate_oms(rows):
+    identifiers = [(row.get("run_number"), row.get("lumisection_number")) for row in rows]
+    if (any(type(value) is not int or value <= 0 for pair in identifiers for value in pair)
+            or len(set(identifiers)) != len(identifiers)):
         raise ValueError("Invalid or duplicate OMS run/LS identifiers")
-    for name in ("beams_stable", "cms_active"):
-        frame[name] = frame[name].astype("boolean")
-    return frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
-
-
-def oms_summary(year):
-    return write_csv(oms_table(json.loads(raw_path("oms", year).read_text())), "oms", year)
 
 
 def oms_collect_run(run, session, years=None, cache=None):
@@ -160,23 +132,24 @@ def oms_collect_run(run, session, years=None, cache=None):
     year = observed_years.pop()
     if years and year not in years:
         raise ValueError("OMS run does not belong to the requested year")
-    path = raw_path("oms", year)
+    validate_oms(rows)
+    path = metadata_path("oms", year)
     previous = cache.get(year) if cache is not None else None
     if previous is None:
         previous = json.loads(path.read_text()) if path.exists() else dict(lumisections=[])
     raw = {"lumisections": [row for row in previous["lumisections"]
                             if row.get("run_number") != run] + rows}
     if cache is not None:
-        table = oms_table({"lumisections": rows})
         cache[year] = raw
-        return table
-    table = oms_table(raw)
+        return raw
+    validate_oms(raw["lumisections"])
+    raw["lumisections"].sort(key=lambda row: (row["run_number"], row["lumisection_number"]))
     write_json(path, raw)
-    return write_csv(table, "oms", year)
+    return raw
 
 
 def oms_collect_runs(runs, session, years=None, auth=None):
-    """Collect a batch in memory and save each annual raw/summary pair once."""
+    """Collect a batch in memory and save each annual JSON once."""
     cache, saved, failed = {}, 0, 0
     for run in runs:
         try:
@@ -188,9 +161,9 @@ def oms_collect_runs(runs, session, years=None, auth=None):
             failed += 1
             print(f"OMS run {run} skipped: {error}", file=sys.stderr)
     for year, raw in cache.items():
-        table = oms_table(raw)
-        write_json(raw_path("oms", year), raw)
-        write_csv(table, "oms", year)
+        validate_oms(raw["lumisections"])
+        raw["lumisections"].sort(key=lambda row: (row["run_number"], row["lumisection_number"]))
+        write_json(metadata_path("oms", year), raw)
     return saved, failed
 
 
@@ -214,17 +187,6 @@ def rr_verdict(counts):
     if numbers.get("GOOD", 0) > 0 and all(value == 0 for key, value in numbers.items() if key != "GOOD"):
         return "good"
     return "unknown"
-
-
-def rr_summary(year):
-    payload = json.loads(raw_path("rr", year).read_text())
-    rows = [{"run_number": run["run_number"], **{
-        name: "unknown" if run["deleted"] else rr_verdict(run["components"].get(name) or {})
-        for name in RR_COMPONENTS}} for run in payload["runs"]]
-    frame = pd.DataFrame(rows, columns=["run_number", *RR_COMPONENTS])
-    if frame.run_number.duplicated().any():
-        raise ValueError("Duplicate RR run verdicts")
-    return write_csv(frame.sort_values("run_number"), "rr", year)
 
 
 def rr_collect_year(year, session):
@@ -252,21 +214,22 @@ def rr_collect_year(year, session):
         if len(runs) > expected or not rows:
             raise ValueError("Incomplete RR pagination")
         page += 1
-    write_json(raw_path("rr", year), {"runs": records})
-    return rr_summary(year)
+    value = {"runs": sorted(records, key=lambda record: record["run_number"])}
+    write_json(metadata_path("rr", year), value)
+    return value
 
 
 def selected_runs(years=None):
-    paths = ([DATA/"rr/summary"/f"{year}.csv" for year in years] if years else
-             sorted((DATA/"rr/summary").glob("[0-9][0-9][0-9][0-9].csv")))
-    runs = {int(run) for path in paths if path.exists() for run in pd.read_csv(path).run_number}
+    paths = ([metadata_path("rr", year) for year in years] if years else
+             sorted((DATA/"rr").glob("[0-9][0-9][0-9][0-9].json")))
+    runs = {int(run["run_number"]) for path in paths if path.exists()
+            for run in json.loads(path.read_text())["runs"]}
     cached = None
     if MANIFEST.exists():
-        frame = pd.read_csv(MANIFEST)
-        frame = frame[frame.dataset.str.startswith("/Muon0/Run20")]
-        if years:
-            frame = frame[frame.dataset.str.contains("|".join(f"/Run{year}" for year in years))]
-        cached = set(frame.run_number.astype(int))
+        with MANIFEST.open(newline="") as stream:
+            cached = {int(row["run_number"]) for row in csv.DictReader(stream)
+                      if row["dataset"].startswith("/Muon0/Run20")
+                      and (not years or any(f"/Run{year}" in row["dataset"] for year in years))}
     if runs:
         return sorted(runs if not cached else runs & cached)
     if cached:
@@ -279,26 +242,18 @@ def main():
     parser.add_argument("source", choices=("dcs", "oms", "rr"))
     parser.add_argument("--years", type=int, nargs="+")
     parser.add_argument("--runs", type=int, nargs="+", help="OMS run selection")
-    parser.add_argument("--offline", action="store_true", help="Rebuild yearly CSV files from saved JSON")
     args = parser.parse_args()
-    if args.runs and (args.source != "oms" or args.offline):
-        parser.error("--runs is for online OMS collection; use --years for annual files")
+    if args.runs and args.source != "oms":
+        parser.error("--runs is for OMS collection; use --years for annual files")
     if args.runs and any(run <= 0 for run in args.runs):
         parser.error("Run numbers must be positive")
-    if not args.offline:
-        setup_tls()
+    setup_tls()
     if args.source == "dcs":
-        dcs_collect(args.years or [2023, 2024, 2025, 2026], offline=args.offline)
+        dcs_collect(args.years or [2023, 2024, 2025, 2026])
     elif args.source == "rr":
-        session = None if args.offline else rr_session()
+        session = rr_session()
         for year in args.years or [2025]:
-            rr_summary(year) if args.offline else rr_collect_year(year, session)
-    elif args.offline:
-        years = args.years or annual_years("oms")
-        if not years:
-            parser.error("No annual OMS JSON found")
-        for year in years:
-            oms_summary(year)
+            rr_collect_year(year, session)
     else:
         try:
             runs = list(dict.fromkeys(args.runs or selected_runs(args.years)))
@@ -311,7 +266,7 @@ def main():
         if not saved:
             raise SystemExit(1)
         return
-    print(f"{args.source.upper()}: yearly CSV summaries saved")
+    print(f"{args.source.upper()}: yearly JSON files saved")
 
 
 if __name__ == "__main__":

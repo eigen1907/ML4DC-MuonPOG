@@ -1,4 +1,4 @@
-"""Read cached Muon MEs and use Run Registry summaries for run labels."""
+"""Read cached Muon MEs and annual Run Registry metadata for run labels."""
 
 import hashlib
 import json
@@ -8,7 +8,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from config import (DCS_PATH, IDS, MANIFEST, MODEL_MES, PROMPT_RECO_PATTERN,
-                    RAW, REGIONS, RR_SUMMARY, SEED, SPECIAL_RUNS, raw_folder)
+                    RAW, REGIONS, RR_DATA, SEED, SPECIAL_RUNS, raw_folder)
+from fetch_metadata import rr_verdict
 
 
 def _integers(values, dtype, description):
@@ -68,12 +69,27 @@ def select(frame, intervals, phi_entries):
 
 
 def load_run_labels():
-    """Use the Muon column from annual RR tables; absence never means Good."""
-    files = sorted(RR_SUMMARY.glob("[0-9][0-9][0-9][0-9].csv"))
+    """Derive Muon verdicts from annual RR JSON; absence never means Good."""
+    files = sorted(RR_DATA.glob("[0-9][0-9][0-9][0-9].json"))
     if not files:
-        raise FileNotFoundError("No annual RR summaries; collect RR metadata first")
-    labels = pd.concat([pd.read_csv(path, usecols=["run_number", "muon"]) for path in files],
-                       ignore_index=True).rename(columns={"muon": "label"})
+        raise FileNotFoundError("No annual RR JSON; collect RR metadata first")
+    rows = []
+    for path in files:
+        payload = json.loads(path.read_text())
+        if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
+            raise ValueError("Expected annual RR JSON with a runs array")
+        for run in payload["runs"]:
+            if not isinstance(run, dict) or "run_number" not in run:
+                raise ValueError("Invalid RR run record")
+            components = run.get("components") or {}
+            if not isinstance(components, dict):
+                raise ValueError("Expected RR component verdict counts")
+            counts = components.get("muon") or {}
+            if not isinstance(counts, dict):
+                raise ValueError("Expected RR component verdict counts")
+            rows.append(dict(run_number=run["run_number"],
+                             label="unknown" if run.get("deleted") else rr_verdict(counts)))
+    labels = pd.DataFrame(rows, columns=["run_number", "label"])
     labels["run_number"] = _integers(pd.to_numeric(labels.run_number, errors="coerce"),
                                     np.int64, "RR run numbers")
     if ((labels.run_number <= 0).any() or labels.run_number.duplicated().any()
