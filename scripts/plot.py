@@ -9,7 +9,7 @@ import mplhep as hep
 import numpy as np
 import pandas as pd
 
-from config import EXAMPLES, MANIFEST, OUT, PROMPT_RECO_PATTERN, REGIONS, raw_folder
+from config import EXAMPLES, OUT, PROMPT_RECO_PATTERN, REGIONS, cached_runs, dials_folder
 from data import load_run_labels
 
 
@@ -158,17 +158,17 @@ def plot_entries(input_paths: list[Path], region: str | None = None) -> None:
 
 def plot_examples() -> None:
     """Draw the fixed representative runs and A–D regions from the cache."""
-    inventory = pd.read_csv(MANIFEST)
-    inventory = inventory[inventory.dataset.str.contains(PROMPT_RECO_PATTERN)]
+    available = pd.DataFrame(cached_runs(), columns=["dataset", "run_number"])
+    available = available[available.dataset.str.contains(PROMPT_RECO_PATTERN)]
     cases = [(None, (run,)) for runs in EXAMPLES.values() for run in runs]
     cases.extend(REGIONS.items())
     for region, runs in cases:
         files = []
         for run in runs:
-            rows = inventory[inventory.run_number.eq(run)]
+            rows = available[available.run_number.eq(run)]
             if len(rows) != 1:
                 raise ValueError(f"Expected one PromptReco dataset for run {run}")
-            folder = raw_folder(rows.iloc[0].dataset, run)
+            folder = dials_folder(rows.iloc[0].dataset, run)
             files.extend(sorted(folder.glob("Muons__*.parquet")))
         if not files:
             raise ValueError(f"No cached MEs for runs {runs}")

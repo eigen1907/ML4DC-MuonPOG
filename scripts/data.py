@@ -5,10 +5,11 @@ import json
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
 
-from config import (DCS_PATH, IDS, MANIFEST, MODEL_MES, PROMPT_RECO_PATTERN,
-                    RAW, REGIONS, RR_DATA, SEED, SPECIAL_RUNS, raw_folder)
+from config import (DCS_PATH, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
+                    REGIONS, RR_DATA, SEED, SPECIAL_RUNS, cached_runs, dials_folder)
 from fetch_metadata import rr_verdict
 
 
@@ -101,33 +102,36 @@ def load_run_labels():
 def load_dataset():
     """Read each selected parquet once; skip runs missing a selected ME.
 
-    Split the full run catalogue before excluding incomplete caches. Native
+    Split discovered runs before excluding incomplete caches. Native
     signed bins, ROOT entries and in-range bin totals remain distinct. Only the
     historical moment representation folds eta. No DIALS calls are made.
     """
-    manifest = pd.read_csv(MANIFEST)
-    manifest = manifest[manifest.dataset.str.contains(PROMPT_RECO_PATTERN)].copy()
-    if manifest.empty or manifest.run_number.duplicated().any():
+    runs = pd.DataFrame(cached_runs(), columns=["dataset", "run_number"])
+    runs = runs.loc[runs.dataset.str.contains(PROMPT_RECO_PATTERN, na=False)].copy()
+    if runs.empty or runs.run_number.duplicated().any():
         raise ValueError("Expected one cached PromptReco dataset per run")
     labels = load_run_labels()
-    manifest["label"] = manifest.run_number.map(labels).fillna("unknown")
-    manifest["era"] = manifest.dataset.str.extract(r"Run(2025[A-Z])")[0]
-    good = manifest[manifest.label.eq("good")]
+    runs["label"] = runs.run_number.map(labels).fillna("unknown")
+    runs["era"] = runs.dataset.str.extract(r"Run(2025[A-Z])")[0]
+    good = runs[runs.label.eq("good")]
     try:
         train, holdout = train_test_split(good, train_size=.70, random_state=SEED, stratify=good.era)
         validation, test = train_test_split(holdout, train_size=.5, random_state=SEED, stratify=holdout.era)
     except ValueError as error:
         raise ValueError("Not enough RR-labelled Good runs for the run-separated split; collect more RR metadata") from error
     split = {"train": set(train.run_number), "validation": set(validation.run_number),
-             "test": set(test.run_number) | set(manifest.loc[manifest.label.ne("good"), "run_number"])}
-    ready = [all((raw_folder(row.dataset, row.run_number, root=RAW) / f"{stem}.parquet").exists()
-                 for stem in MODEL_MES) for row in manifest.itertuples()]
-    expected_runs = len(manifest)
-    manifest = manifest.loc[ready]
-    if manifest.empty:
-        raise ValueError("No complete PromptReco runs in the raw cache")
-    print(f"Using {len(manifest)}/{expected_runs} complete PromptReco runs from the current cache", flush=True)
-    total_rows = int(manifest.ls_count.sum())
+             "test": set(test.run_number) | set(runs.loc[runs.label.ne("good"), "run_number"])}
+    ready = [all((dials_folder(row.dataset, row.run_number, root=DIALS) / f"{stem}.parquet").exists()
+                 for stem in MODEL_MES) for row in runs.itertuples()]
+    expected_runs = len(runs)
+    runs = runs.loc[ready].copy()
+    if runs.empty:
+        raise ValueError("No complete PromptReco runs in the DIALS cache")
+    runs["ls_count"] = [pq.read_metadata(dials_folder(row.dataset, row.run_number, root=DIALS)
+                                         / f"{MODEL_MES[0]}.parquet").num_rows
+                        for row in runs.itertuples()]
+    print(f"Using {len(runs)}/{expected_runs} complete PromptReco runs from the current cache", flush=True)
+    total_rows = int(runs.ls_count.sum())
     n_mes = len(MODEL_MES)
     eta_me = next(me for me in MODEL_MES if me.endswith("__GlbMuon_Glb_eta"))
     phi_me = next(me for me in MODEL_MES if me.endswith("__GlbMuon_Glb_phi"))
@@ -136,8 +140,8 @@ def load_dataset():
     root_entries = np.empty((total_rows, n_mes), dtype=np.int64)
     features = np.empty((total_rows, 2 * n_mes), dtype=np.float64)
     frames, start = [], 0
-    for index, row in enumerate(manifest.itertuples(), 1):
-        folder = raw_folder(row.dataset, row.run_number, root=RAW)
+    for index, row in enumerate(runs.itertuples(), 1):
+        folder = dials_folder(row.dataset, row.run_number, root=DIALS)
         expected_ls, entries = None, {}
         stop = start + int(row.ls_count)
         for target, stem in enumerate(MODEL_MES):
@@ -148,7 +152,7 @@ def load_dataset():
             if len(ls) == 0 or (ls == 0).any() or len(np.unique(ls)) != len(ls):
                 raise ValueError(f"Empty, nonpositive or duplicate LS: {path}")
             if len(ls) != row.ls_count:
-                raise ValueError(f"DIALS LS count differs for run {row.run_number}")
+                raise ValueError(f"Cached ME LS count differs for run {row.run_number}")
             if expected_ls is None:
                 expected_ls = ls
             elif not np.array_equal(ls, expected_ls):
@@ -190,13 +194,13 @@ def load_dataset():
         frames.append(frame)
         start = stop
         if index % 100 == 0:
-            print(f"Loaded {index}/{len(manifest)} runs", flush=True)
+            print(f"Loaded {index}/{len(runs)} runs", flush=True)
     frame = pd.concat(frames, ignore_index=True)[IDS + ["era", "label", "split", "eta_entries"]]
     frame = frame.join(select(frame, load_dcs(), root_entries[:, MODEL_MES.index(phi_me)]))
     return {"frame": frame, "histograms": histograms, "totals": totals,
             "root_entries": root_entries, "axes": axes,
             "features": features, "me_names": list(MODEL_MES),
-            "run_split": {name: sorted(int(run) for run in members & set(manifest.run_number))
+            "run_split": {name: sorted(int(run) for run in members & set(runs.run_number))
                           for name, members in split.items()}}
 
 

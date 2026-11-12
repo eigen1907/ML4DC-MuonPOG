@@ -4,8 +4,7 @@ from pathlib import Path
 
 
 OUT = Path("output")
-RAW = OUT / "dataset/raw"
-MANIFEST = OUT / "dataset/runs.csv"
+DIALS = OUT / "dataset/dials"
 PROMPT_RECO_PATTERN = r"/Run2025[A-Z]-PromptReco-v\d+/DQMIO$"
 RR_DATA = Path("data/rr")
 DCS_PATH = Path("data/dcs/2025.json")
@@ -47,7 +46,20 @@ EXPERIMENTS = {
 }
 
 
-def raw_folder(dataset, run, root=None):
-    """Use the same dataset/run cache layout for collection and local analysis."""
-    root = RAW if root is None else root
+def dials_folder(dataset, run, root=None):
+    """Locate one cached DIALS dataset/run without a separate inventory file."""
+    root = DIALS if root is None else root
     return root / dataset.strip("/").replace("/", "__") / str(run)
+
+
+def cached_runs():
+    """Find dataset/run folders containing Muon histograms, in stable order."""
+    rows = []
+    for folder in DIALS.glob("*/*"):
+        parts = folder.parent.name.split("__")
+        if (not folder.is_dir() or not folder.name.isdigit() or int(folder.name) <= 0
+                or len(parts) != 3 or not all(parts)
+                or not any(path.is_file() for path in folder.glob("Muons__*.parquet"))):
+            continue
+        rows.append({"dataset": "/" + "/".join(parts), "run_number": int(folder.name)})
+    return sorted(rows, key=lambda row: (row["dataset"], row["run_number"]))

@@ -1,7 +1,6 @@
 """Collect one compact JSON file per source and year."""
 
 import argparse
-import csv
 from datetime import datetime
 import json
 import os
@@ -11,8 +10,9 @@ from urllib.parse import parse_qsl, urlsplit
 
 import requests
 
+from config import cached_runs
+
 DATA = Path("data")
-MANIFEST = Path("output/dataset/runs.csv")
 OMS = "https://cmsoms.cern.ch/agg/api/v1/"
 RR = "https://cmsrunregistry.web.cern.ch/api"
 OMS_FIELDS = (
@@ -224,12 +224,9 @@ def selected_runs(years=None):
              sorted((DATA/"rr").glob("[0-9][0-9][0-9][0-9].json")))
     runs = {int(run["run_number"]) for path in paths if path.exists()
             for run in json.loads(path.read_text())["runs"]}
-    cached = None
-    if MANIFEST.exists():
-        with MANIFEST.open(newline="") as stream:
-            cached = {int(row["run_number"]) for row in csv.DictReader(stream)
-                      if row["dataset"].startswith("/Muon0/Run20")
-                      and (not years or any(f"/Run{year}" in row["dataset"] for year in years))}
+    cached = {row["run_number"] for row in cached_runs()
+              if row["dataset"].startswith("/Muon0/Run20")
+              and (not years or any(f"/Run{year}" in row["dataset"] for year in years))}
     if runs:
         return sorted(runs if not cached else runs & cached)
     if cached:
