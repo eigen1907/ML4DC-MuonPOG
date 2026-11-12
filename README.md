@@ -37,17 +37,17 @@ bash runs/plotting/scores.sh --input output/predict/dm_rr
 bash runs/plotting/scores.sh --input output/predict/03_ae_dm_k1
 ```
 
-For the 2024–2026 study, train on 2024–2025 and keep two separate tests. The first
-contains held-out Good runs plus all Bad/Unknown runs from 2024–2025; the second
-contains all 2026 runs. Both use the same checkpoint and fixed threshold:
+For the 2024–2026 study, train on 2024–2025. The combined Test contains held-out
+Good runs plus all Bad/Unknown runs from 2024–2025, followed by all 2026 runs.
+Prediction files remain separate; the plotter combines them using the same
+checkpoint and fixed threshold:
 
 ```bash
 bash runs/train.sh model_03_ae_dm_k1 --years 2024 2025 --output output/model/2024_2025/03_ae_dm_k1
 bash runs/predict.sh output/model/2024_2025/03_ae_dm_k1 data/dials output/predict/2024_2025/03_ae_dm_k1 --years 2024 2025 --prompt-reco
-bash runs/plotting/scores.sh --input output/predict/2024_2025/03_ae_dm_k1 --output output/plots/2024_2025/03_ae_dm_k1
 # After 2026 collection finishes:
 bash runs/predict.sh output/model/2024_2025/03_ae_dm_k1 data/dials output/predict/2026/03_ae_dm_k1 --years 2026 --prompt-reco
-bash runs/plotting/scores.sh --input output/predict/2026/03_ae_dm_k1 --output output/plots/2026/03_ae_dm_k1
+bash runs/plotting/scores.sh --input output/predict/2024_2025/03_ae_dm_k1 output/predict/2026/03_ae_dm_k1 --output output/plots/2024_2025_2026/03_ae_dm_k1
 ```
 
 The Good split remains 70/15/15% by run, stratified by era with seed 42. No 2026
@@ -56,6 +56,8 @@ for prediction to match the training cohort and avoid adding other processings.
 The cached 2024 C–E reprocessings are retained but excluded from this study.
 With the current RR snapshot, 2026 has no Muon Bad labels: it tests stability on
 Good runs and allows inspection of Unknown runs, not Bad detection efficiency.
+Multiple plot inputs must share the checkpoint, threshold and training signature;
+only Test rows are included, and a separate `--output` directory is required.
 
 DIALS collection uses the `muo` workspace and caches available per-LS `Muons/` 1D MEs from every matching Muon0 processing version. Availability is determined by the live listing; requesting a year does not imply that it is present. Existing valid Parquet files are reused.
 

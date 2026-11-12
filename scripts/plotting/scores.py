@@ -50,7 +50,9 @@ def _years(frame):
 
 def _period(years):
     years = sorted({str(year) for year in years})
-    return "–".join(years) if len(years) <= 2 else ", ".join(years)
+    if len(years) > 1 and int(years[-1]) - int(years[0]) + 1 == len(years):
+        return f"{years[0]}–{years[-1]}"
+    return ", ".join(years)
 
 
 def _axis(ax, frame, values, *, log=False):
@@ -180,20 +182,31 @@ def history_for(checkpoint):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True, help="Prediction directory")
+    parser.add_argument("--input", type=Path, nargs="+", required=True, help="One or more prediction directories from the same checkpoint")
     parser.add_argument("--checkpoint", type=Path, help="Checkpoint file or directory for the loss curve")
     parser.add_argument("--output", type=Path, help="Plot directory; default: output/plots/<input name>")
     args = parser.parse_args()
-    metrics = json.loads((args.input / "metrics.json").read_text())
+    if len(args.input) > 1 and args.output is None:
+        parser.error("Use --output when combining prediction directories")
+    records = [json.loads((folder / "metrics.json").read_text()) for folder in args.input]
+    metrics = records[0]
+    candidates = [(folder / record["checkpoint"] if record.get("checkpoint")
+                   else OUT / "model" / (record.get("experiment") or folder.name))
+                  for folder, record in zip(args.input, records)]
+    if any(record.get(key) != metrics.get(key) for record in records[1:]
+           for key in ("experiment", "threshold", "quantile", "signature")):
+        raise ValueError("Combined predictions must share the experiment, calibration and training signature")
+    if any(candidate.resolve() != candidates[0].resolve() for candidate in candidates[1:]):
+        raise ValueError("Combined predictions must use the same checkpoint")
+    scores = pd.concat([read_scores(folder) for folder in args.input], ignore_index=True)
+    if scores.duplicated(IDS).any():
+        raise ValueError("Duplicate dataset/run/LS rows across prediction directories")
     checkpoint = args.checkpoint
-    if checkpoint is None:
-        candidate = (args.input / metrics["checkpoint"] if metrics.get("checkpoint")
-                     else OUT / "model" / (metrics.get("experiment") or args.input.name))
-        if candidate.exists():
-            checkpoint = candidate
+    if checkpoint is None and candidates[0].exists():
+        checkpoint = candidates[0]
     history = history_for(checkpoint) if checkpoint is not None else None
-    output = args.output or OUT / "plots" / args.input.name
-    plot_stage(read_scores(args.input), history, metrics["threshold"], output)
+    output = args.output or OUT / "plots" / args.input[0].name
+    plot_stage(scores, history, metrics["threshold"], output)
     print("Saved plots to", output)
 
 
