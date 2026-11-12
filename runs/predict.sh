@@ -2,12 +2,14 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-    printf 'Usage: bash runs/predict.sh CHECKPOINT DATA [OUTPUT]\n' >&2
+if [[ $# -lt 2 ]]; then
+    printf 'Usage: bash runs/predict.sh CHECKPOINT DATA [OUTPUT] [OPTIONS]\n' >&2
     exit 2
 fi
 args=(--checkpoint "$1" --data "$2")
-if [[ $# -eq 3 ]]; then
-    args+=(--output "$3")
+shift 2
+if [[ $# -gt 0 && "$1" != --* ]]; then
+    args+=(--output "$1")
+    shift
 fi
-uv run --locked python -m scripts.predict "${args[@]}"
+exec uv run --locked python -m scripts.predict "${args[@]}" "$@"

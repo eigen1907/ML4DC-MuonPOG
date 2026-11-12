@@ -5,9 +5,9 @@ from pathlib import Path
 
 OUT = Path("output")
 DIALS = Path("data/dials")
-PROMPT_RECO_PATTERN = r"/Run2025[A-Z]-PromptReco-v\d+/DQMIO$"
+PROMPT_RECO_PATTERN = r"^/Muon0/Run20\d\d[A-Z]-PromptReco-v\d+/DQMIO$"
 RR_DATA = Path("data/rr")
-DCS_PATH = Path("data/dcs/2025.json")
+DCS_DATA = Path("data/dcs")
 IDS = ["dataset", "run_number", "ls_number"]
 SEED = 42
 WINDOW_SIZE = 5

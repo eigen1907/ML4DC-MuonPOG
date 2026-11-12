@@ -177,11 +177,18 @@ def rr_session():
     return session
 
 
-def rr_collect_year(year, session):
-    records, runs, expected, page = [], set(), None, 0
-    name = f"/PromptReco/Collisions{year}/DQM"
+def rr_datasets(session, name, runs=None):
+    """Read one RR dataset selection without keeping API wrappers."""
+    if runs is not None:
+        runs = list(runs)
+        if not runs:
+            return []
+    records, seen, expected, page = [], set(), None, 0
+    filters = {"name": name}
+    if runs is not None:
+        filters["run_number"] = list(runs)
     while True:
-        query = dict(page=page, filter={"name": name}, page_size=100, sortings=[])
+        query = dict(page=page, filter=filters, page_size=100, sortings=[])
         payload = json_response(session.post(RR+"/datasets_filtered_ordered", json=query,
                                              timeout=30, allow_redirects=False))
         rows, count = payload["datasets"], int(payload["count"])
@@ -189,36 +196,58 @@ def rr_collect_year(year, session):
             raise ValueError("Invalid RR dataset catalogue")
         expected = count
         for row in rows:
-            if row["name"] != name or row["run_number"] in runs:
+            run = row["run_number"]
+            if (row["name"] != name or type(run) is not int or run <= 0 or run in seen
+                    or (runs is not None and run not in runs)):
                 raise ValueError("Duplicate or unexpected RR dataset")
-            runs.add(row["run_number"])
+            seen.add(run)
             triplets = (row.get("DatasetTripletCache") or {}).get("triplet_summary") or {}
-            records.append({"run_number": row["run_number"], "deleted": bool(row.get("deleted")),
+            records.append({"run_number": run, "rr_dataset": name, "deleted": bool(row.get("deleted")),
                             "components": {short: {key: value for key, value in
                                 (triplets.get(component) or {}).items() if isinstance(value, (int, float))}
                                 for short, component in RR_COMPONENTS.items()}})
-        if len(runs) == expected:
-            break
-        if len(runs) > expected or not rows:
+        if len(seen) == expected:
+            return records
+        if len(seen) > expected or not rows:
             raise ValueError("Incomplete RR pagination")
         page += 1
-    value = {"runs": sorted(records, key=lambda record: record["run_number"])}
+
+
+def rr_collect_year(year, session, runs=None):
+    """Keep Collisions verdicts, then cover cached Muon0 with bounded fallbacks."""
+    if runs is None:
+        runs = [row["run_number"] for row in cached_runs()
+                if row["dataset"].startswith(f"/Muon0/Run{year}")]
+    runs = list(runs)
+    if any(type(run) is not int or run <= 0 for run in runs):
+        raise ValueError("Expected positive integer Muon0 run numbers")
+    targets = sorted(set(runs))
+    records = {row["run_number"]: row for row in
+               rr_datasets(session, f"/PromptReco/Collisions{year}/DQM")}
+    for name in (f"/PromptReco/Commissioning{year}/DQM", "online"):
+        missing = [run for run in targets if run not in records or records[run]["deleted"]]
+        for first in range(0, len(missing), 100):
+            for row in rr_datasets(session, name, missing[first:first+100]):
+                previous = records.get(row["run_number"])
+                if previous is None or (previous["deleted"] and not row["deleted"]):
+                    records[row["run_number"]] = row
+    value = {"runs": sorted(records.values(), key=lambda record: record["run_number"])}
     write_json(metadata_path("rr", year), value)
     return value
 
 
 def selected_runs(years=None):
+    cached = {row["run_number"] for row in cached_runs()
+              if row["dataset"].startswith("/Muon0/Run20")
+              and (not years or any(f"/Run{year}" in row["dataset"] for year in years))}
+    if cached:
+        return sorted(cached)
     paths = ([metadata_path("rr", year) for year in years] if years else
              sorted((DATA/"rr").glob("[0-9][0-9][0-9][0-9].json")))
     runs = {int(run["run_number"]) for path in paths if path.exists()
             for run in json.loads(path.read_text())["runs"]}
-    cached = {row["run_number"] for row in cached_runs()
-              if row["dataset"].startswith("/Muon0/Run20")
-              and (not years or any(f"/Run{year}" in row["dataset"] for year in years))}
     if runs:
-        return sorted(runs if not cached else runs & cached)
-    if cached:
-        return sorted(cached)
+        return sorted(runs)
     raise ValueError("Run RR metadata first or specify --runs; no Muon0 run list is available")
 
 

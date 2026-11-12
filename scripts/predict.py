@@ -41,13 +41,13 @@ def predict_terms(spec, saved, dataset):
     return terms, None
 
 
-def predict(checkpoint, data, output=None):
+def predict(checkpoint, data, output=None, *, years=None):
     spec, saved, checkpoint = load_checkpoint(checkpoint)
     cut = threshold_for(checkpoint, saved, spec)
     output = Path(output) if output is not None else OUT/'predict'/spec.NAME
     if (output/'scores.parquet').exists() or (output/'metrics.json').exists():
         raise FileExistsError(f'{output}: saved predictions exist; choose a different --output directory')
-    dataset = load_dataset(Path(data), split=False)
+    dataset = load_dataset(Path(data), split=False, years=years)
     terms, values = predict_terms(spec, saved, dataset)
     values = mean_score(terms) if values is None else np.asarray(values, dtype=float)
     scores = dataset['frame'].copy()
@@ -73,9 +73,10 @@ def main():
     parser.add_argument('--checkpoint', type=Path, required=True)
     parser.add_argument('--data', type=Path, required=True, help='DIALS cache root containing dataset/run folders')
     parser.add_argument('--output', type=Path, help='Prediction directory; existing scores are preserved')
+    parser.add_argument('--years', type=int, nargs='+', help='Use only these cached years; default: all')
     args = parser.parse_args()
     torch.set_num_threads(4)
-    predict(args.checkpoint, args.data, args.output)
+    predict(args.checkpoint, args.data, args.output, years=args.years)
 
 
 if __name__ == '__main__':

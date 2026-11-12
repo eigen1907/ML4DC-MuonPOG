@@ -144,6 +144,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', required=True, choices=[f'model_{name}' for name in EXPERIMENTS])
     parser.add_argument('--data', type=Path, default=DIALS, help='Cached DIALS directory')
+    parser.add_argument('--years', type=int, nargs='+', help='Use only these cached years; default: all')
     parser.add_argument('--output', type=Path, help='Checkpoint directory; default: output/model/<model>')
     parser.add_argument('--source', type=Path, help='Model 03 checkpoint for model 04 only')
     args = parser.parse_args()
@@ -160,7 +161,7 @@ def main():
     torch.set_num_threads(4)
     torch.set_num_interop_threads(1)
     torch.use_deterministic_algorithms(True)
-    dataset = load_dataset(args.data, split=True)
+    dataset = load_dataset(args.data, split=True, years=args.years)
     context = training_context(dataset)
     if path.exists():
         old_spec, saved, _ = load_checkpoint(path)

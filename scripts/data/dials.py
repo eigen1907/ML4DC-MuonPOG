@@ -9,7 +9,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
 
-from scripts.models.config import (DCS_PATH, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
+from scripts.models.config import (DCS_DATA, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
                     REGIONS, RR_DATA, SEED, SPECIAL_RUNS, cached_runs, dials_folder)
 from scripts.models.preprocessing import _moments
 
@@ -23,17 +23,33 @@ def _integers(values, dtype, description):
     return values.astype(dtype)
 
 
-def load_dcs():
-    intervals = json.loads(DCS_PATH.read_text())
-    if not isinstance(intervals, dict) or not intervals:
-        raise ValueError("Expected a nonempty CMS run/LS DCS JSON")
-    for run, ranges in intervals.items():
-        if not str(run).isdigit() or int(run) <= 0 or not isinstance(ranges, list):
-            raise ValueError("Invalid DCS run")
-        for pair in ranges:
-            if (not isinstance(pair, list) or len(pair) != 2
-                    or any(type(x) is not int for x in pair) or not 0 < pair[0] <= pair[1]):
-                raise ValueError("Invalid inclusive DCS LS range")
+def _years(years):
+    years = sorted(set(years))
+    if not years or any(type(year) is not int or not 2000 <= year <= 2099 for year in years):
+        raise ValueError("Expected one or more 20xx years")
+    return years
+
+
+def load_dcs(years):
+    """Merge required annual snapshots; a missing year must not exclude every LS."""
+    intervals = {}
+    for year in _years(years):
+        path = DCS_DATA / f"{year}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing DCS metadata: {path}; collect this year first")
+        annual = json.loads(path.read_text())
+        if not isinstance(annual, dict) or not annual:
+            raise ValueError(f"Expected a nonempty CMS run/LS DCS JSON: {path}")
+        for run, ranges in annual.items():
+            if not str(run).isdigit() or int(run) <= 0 or not isinstance(ranges, list):
+                raise ValueError(f"Invalid DCS run: {path}")
+            if run in intervals:
+                raise ValueError(f"Duplicate DCS run across annual snapshots: {run}")
+            for pair in ranges:
+                if (not isinstance(pair, list) or len(pair) != 2
+                        or any(type(x) is not int for x in pair) or not 0 < pair[0] <= pair[1]):
+                    raise ValueError(f"Invalid inclusive DCS LS range: {path}")
+        intervals.update(annual)
     return intervals
 
 
@@ -69,13 +85,16 @@ def rr_verdict(counts):
 
 
 
-def load_run_labels():
+def load_run_labels(years=None):
     """Derive Muon verdicts from annual RR JSON; absence never means Good."""
-    files = sorted(RR_DATA.glob("[0-9][0-9][0-9][0-9].json"))
+    files = (sorted(RR_DATA.glob("[0-9][0-9][0-9][0-9].json")) if years is None
+             else [RR_DATA / f"{year}.json" for year in _years(years)])
     if not files:
         raise FileNotFoundError("No annual RR JSON; collect RR metadata first")
     rows = []
     for path in files:
+        if not path.is_file():
+            raise FileNotFoundError(f"Missing RR metadata: {path}; collect this year first")
         payload = json.loads(path.read_text())
         if not isinstance(payload, dict) or not isinstance(payload.get("runs"), list):
             raise ValueError("Expected annual RR JSON with a runs array")
@@ -89,7 +108,8 @@ def load_run_labels():
             if not isinstance(counts, dict):
                 raise ValueError("Expected RR component verdict counts")
             rows.append(dict(run_number=run["run_number"],
-                             label="unknown" if run.get("deleted") else rr_verdict(counts)))
+                             label="unknown" if run.get("deleted") or run.get("rr_dataset") == "online"
+                             else rr_verdict(counts)))
     labels = pd.DataFrame(rows, columns=["run_number", "label"])
     labels["run_number"] = _integers(pd.to_numeric(labels.run_number, errors="coerce"),
                                     np.int64, "RR run numbers")
@@ -99,10 +119,11 @@ def load_run_labels():
     return labels.set_index("run_number").label
 
 
-def load_dataset(root=DIALS, *, split=True):
+def load_dataset(root=DIALS, *, split=True, years=None):
     """Read each selected parquet once; skip runs missing a selected ME.
 
-    Training splits discovered PromptReco runs before excluding incomplete caches.
+    Training splits discovered Muon0 PromptReco runs before excluding incomplete caches.
+    Each physical run must have one processing to avoid duplicated training LS.
     Inference accepts any cached dataset with every row assigned to Test. Native
     signed bins, ROOT entries and in-range bin totals remain distinct. Only the
     historical moment representation folds eta. No DIALS calls are made.
@@ -111,15 +132,27 @@ def load_dataset(root=DIALS, *, split=True):
     runs = pd.DataFrame(cached_runs(root), columns=["dataset", "run_number"])
     if split:
         runs = runs.loc[runs.dataset.str.contains(PROMPT_RECO_PATTERN, na=False)].copy()
-    identifiers = ["run_number"] if split else ["dataset", "run_number"]
-    if runs.empty or runs.duplicated(identifiers).any():
+    run_years = runs.dataset.str.extract(r"/Run(20\d\d)")[0]
+    if years is not None:
+        runs = runs.loc[run_years.isin([str(year) for year in _years(years)])].copy()
+        run_years = run_years.loc[runs.index]
+    if runs.empty or runs.duplicated(["dataset", "run_number"]).any():
         raise ValueError("Expected nonempty unique cached dataset/run pairs")
-    try:
-        labels = load_run_labels()
-    except FileNotFoundError:
-        if split:
-            raise
-        labels = pd.Series(dtype="object")
+    if run_years.isna().any():
+        raise ValueError("Cannot determine DCS year from a cached dataset name")
+    selected_years = sorted(run_years.astype(int).unique().tolist())
+    if split and runs.run_number.duplicated(keep=False).any():
+        repeated = runs.loc[runs.run_number.duplicated(keep=False), ["run_number", "dataset"]]
+        raise ValueError("Multiple PromptReco processings for the same run; select one cache processing "
+                         "before training:\n" + repeated.to_string(index=False))
+    if split:
+        labels = load_run_labels(selected_years)
+    else:
+        available_years = [year for year in selected_years if (RR_DATA / f"{year}.json").is_file()]
+        missing_years = sorted(set(selected_years) - set(available_years))
+        if missing_years:
+            print(f"RR metadata unavailable for {missing_years}; their labels remain unknown", flush=True)
+        labels = load_run_labels(available_years) if available_years else pd.Series(dtype="object")
     runs["label"] = runs.run_number.map(labels).fillna("unknown")
     runs["era"] = runs.dataset.str.extract(r"Run(20\d\d[A-Z])")[0].fillna("unknown")
     if split:
@@ -139,6 +172,8 @@ def load_dataset(root=DIALS, *, split=True):
     runs = runs.loc[ready].copy()
     if runs.empty:
         raise ValueError("No complete runs in the DIALS cache")
+    selected_years = sorted(runs.dataset.str.extract(r"/Run(20\d\d)")[0].astype(int).unique().tolist())
+    intervals = load_dcs(selected_years)
     runs["ls_count"] = [pq.read_metadata(dials_folder(row.dataset, row.run_number, root=root)
                                          / f"{MODEL_MES[0]}.parquet").num_rows
                         for row in runs.itertuples()]
@@ -208,7 +243,7 @@ def load_dataset(root=DIALS, *, split=True):
         if index % 100 == 0:
             print(f"Loaded {index}/{len(runs)} runs", flush=True)
     frame = pd.concat(frames, ignore_index=True)[IDS + ["era", "label", "split", "eta_entries"]]
-    frame = frame.join(select(frame, load_dcs(), root_entries[:, MODEL_MES.index(phi_me)]))
+    frame = frame.join(select(frame, intervals, root_entries[:, MODEL_MES.index(phi_me)]))
     return {"frame": frame, "histograms": histograms, "totals": totals,
             "root_entries": root_entries, "axes": axes,
             "features": features, "me_names": list(MODEL_MES),
@@ -227,7 +262,15 @@ def validation_roles(frame):
 
 def fingerprint(dataset):
     """Identify actual counts, the current run split/RR labels and DCS selection."""
-    digest = hashlib.sha256(DCS_PATH.read_bytes())
+    years = sorted(dataset["frame"].dataset.str.extract(r"/Run(20\d\d)")[0].astype(int).unique())
+    if len(years) == 1:
+        digest = hashlib.sha256((DCS_DATA / f"{years[0]}.json").read_bytes())
+    else:
+        digest = hashlib.sha256()
+        for year in years:
+            digest.update(f"{year}:".encode())
+            digest.update((DCS_DATA / f"{year}.json").read_bytes())
+            digest.update(b"\0")
     digest.update(dataset["frame"][IDS + ["split", "label"]].to_csv(index=False).encode())
     for hist in dataset["histograms"]:
         digest.update(memoryview(np.ascontiguousarray(hist)))
