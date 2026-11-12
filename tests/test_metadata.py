@@ -67,32 +67,30 @@ class MetadataTests(unittest.TestCase):
                  next_link="https://internal.invalid/ls?page[offset]=1&page[limit]=1&filter[run_number][EQ]=999"),
             page([ls(7, 2, 10)], total=2),
         ]
-        pages = metadata.oms_pages(session, "lumisections", {"filter[run_number][EQ]": 7})
-        self.assertEqual(len(pages), 2)
+        rows = metadata.oms_pages(session, "lumisections", {"filter[run_number][EQ]": 7})
+        self.assertEqual([row["lumisection_number"] for row in rows], [1, 2])
+        self.assertTrue(all(set(row) == set(metadata.OMS_FIELDS) for row in rows))
         self.assertTrue(all(call.args[0] == metadata.OMS+"lumisections" for call in session.get.call_args_list))
         self.assertEqual(session.get.call_args_list[1].kwargs["params"]["filter[run_number][EQ]"], 7)
         session.get.side_effect = None; session.get.return_value = page([], total=1)
         with self.assertRaisesRegex(ValueError, "pagination"):
             metadata.oms_pages(session, "lumisections", {})
 
-    def test_oms_annual_merge_fill_cache_and_run_replacement(self):
+    def test_oms_saves_only_ls_fields_and_replaces_one_run(self):
         session = Mock(); session.get.side_effect = [
-            page([ls(7, 1, 10, rpc_ready=True, bpix_ready=True), ls(7, 2, 11, rpc_ready=None), ls(7, 3, None)]),
-            page([dict(fill_number=10, bunches_colliding=100, extra="kept")]),
-            page([dict(fill_number=11, bunches_colliding=200)]),
+            page([ls(7, 1, 10, cms_active=True, rpc_ready=True, bpix_ready=True),
+                  ls(7, 2, 11, cms_active=None), ls(7, 3, None)]),
         ]
         table = metadata.oms_collect_run(7, session)
-        self.assertEqual(table.bunches_colliding[:2].tolist(), [100, 200])
-        self.assertTrue(pd.isna(table.bunches_colliding.iloc[2]))
-        self.assertTrue(pd.isna(table.rpc_ready.iloc[1]))
-        self.assertNotIn("bpix_ready", table)
-        self.assertNotIn("runs", [call.args[0].rsplit("/", 1)[-1] for call in session.get.call_args_list])
+        self.assertTrue(pd.isna(table.cms_active.iloc[1]))
+        self.assertTrue(all(name not in table for name in ("fill_number", "bpix_ready", "rpc_ready", "bunches_colliding")))
+        self.assertEqual(session.get.call_count, 1)
+        self.assertEqual(session.get.call_args.args[0], metadata.OMS+"lumisections")
         self.assertEqual(session.get.call_args_list[0].kwargs["params"]["fields"], ",".join(metadata.OMS_FIELDS))
-        self.assertTrue(all(call.kwargs["params"]["fields"] == "fill_number,bunches_colliding"
-                            for call in session.get.call_args_list[1:]))
         raw = json.loads(metadata.raw_path("oms", 2025).read_text())
-        self.assertEqual(set(raw), {"lumisections", "fills"})
-        self.assertTrue(raw["lumisections"][0]["data"][0]["attributes"]["bpix_ready"])
+        self.assertEqual(set(raw), {"lumisections"})
+        self.assertEqual(set(raw["lumisections"][0]), set(metadata.OMS_FIELDS))
+        self.assertNotIn("attributes", raw["lumisections"][0])
         session.get.reset_mock(); session.get.side_effect = [page([ls(8, 1, 10)])]
         table = metadata.oms_collect_run(8, session)
         self.assertEqual(session.get.call_count, 1)
@@ -115,13 +113,13 @@ class MetadataTests(unittest.TestCase):
                 metadata.oms_collect_run(7, session)
             self.assertEqual(metadata.raw_path("oms", 2025).read_bytes(), before)
 
-    def test_oms_batch_reuses_fill_and_writes_annual_files_once(self):
-        session = Mock(); session.get.side_effect = [page([ls(7, 1, 10)]),
-            page([dict(fill_number=10, bunches_colliding=100)]), page([ls(8, 1, 10)])]
+    def test_oms_batch_queries_only_ls_and_writes_annual_files_once(self):
+        session = Mock(); session.get.side_effect = [page([ls(7, 1, 10)]), page([ls(8, 1, 10)])]
         with patch.object(metadata, "write_json", wraps=metadata.write_json) as write_raw, \
                 patch.object(metadata, "write_csv", wraps=metadata.write_csv) as write_summary:
             self.assertEqual(metadata.oms_collect_runs([7, 8], session), (2, 0))
-        self.assertEqual(session.get.call_count, 3)
+        self.assertEqual(session.get.call_count, 2)
+        self.assertTrue(all(call.args[0] == metadata.OMS+"lumisections" for call in session.get.call_args_list))
         self.assertEqual(write_raw.call_count, 1)
         self.assertEqual(write_summary.call_count, 1)
         self.assertEqual(pd.read_csv(self.root/"oms/summary/2025.csv").run_number.tolist(), [7, 8])
@@ -131,7 +129,7 @@ class MetadataTests(unittest.TestCase):
         session.get.side_effect = [page([ls(7, 1, None)])]
         metadata.oms_collect_run(7, session, cache=cache)
         previous = json.dumps(cache)
-        session.get.side_effect = [page([ls(8, 1, 11)]), response(status=500)]
+        session.get.side_effect = [response(status=500)]
         with self.assertRaises(requests.HTTPError):
             metadata.oms_collect_run(8, session, cache=cache)
         self.assertEqual(json.dumps(cache), previous)
@@ -145,6 +143,11 @@ class MetadataTests(unittest.TestCase):
                 row(2, {"muon-muon": {"GOOD": 2, "NOTSET": 1}}),
                 row(3, {"muon-muon": {"BAD": 2}}), row(4, {}),
                 row(5, {"muon-muon": {"GOOD": 3}}, deleted=True)]
+        rows[0]["Run"] = {"unneeded": "large embedded OMS object"}
+        rows[0]["dataset_attributes"] = {"muon_state": "COMPLETED"}
+        counts = rows[0]["DatasetTripletCache"]["triplet_summary"]
+        counts["muon-muon"].update(comments=["not stored"], causes=["not stored"])
+        counts["unused-component"] = {"GOOD": 3}
         session = Mock(); session.post.return_value = response(dict(count=5, datasets=rows))
         table = metadata.rr_collect_year(2025, session)
         self.assertEqual(table.muon.tolist(), ["good", "unknown", "bad", "unknown", "unknown"])
@@ -154,6 +157,11 @@ class MetadataTests(unittest.TestCase):
         self.assertEqual(session.post.call_args.kwargs["json"]["filter"], {"name": "/PromptReco/Collisions2025/DQM"})
         pd.testing.assert_frame_equal(metadata.rr_summary(2025), table)
         self.assertEqual([p.name for p in (self.root/"rr/raw").iterdir()], ["2025.json"])
+        raw = json.loads(metadata.raw_path("rr", 2025).read_text())
+        self.assertEqual(set(raw), {"runs"})
+        self.assertEqual(set(raw["runs"][0]), {"run_number", "deleted", "components"})
+        self.assertEqual(set(raw["runs"][0]["components"]), set(metadata.RR_COMPONENTS))
+        self.assertEqual(raw["runs"][0]["components"]["muon"], {"GOOD": 3})
 
     def test_rr_pagination_and_failed_refresh_preserve_previous_annual_file(self):
         def row(run):

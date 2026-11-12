@@ -35,12 +35,12 @@ data/{dcs,oms,rr}/
 | Source | Summary contents |
 |---|---|
 | DCS | Run and inclusive first/last LS of tracker-ready intervals |
-| OMS | One row per LS: run/fill, time, LS luminosity, pile-up, stable beams, CMS active, colliding bunches and Muon readiness bits |
+| OMS | One row per LS: run/LS, start/end time, delivered/recorded LS luminosity, pile-up, stable beams and CMS active |
 | RR | One row per run and one column per main component: good/bad/unknown |
 
-OMS reads LS data and fill bunch counts; the unused run endpoint is no longer queried. Fill responses are stored once per year and joined by each LS's fill number. Only `*_per_lumisection` luminosity fields enter the CSV; plain luminosity fields can be cumulative. New OMS requests select the required attributes through the documented API `fields` parameter.
+OMS queries only the lumisections endpoint and requests nine attributes through the API `fields` parameter. Run and Fill queries, fill number, bunch counts and individual detector readiness bits are omitted for now. Only `*_per_lumisection` luminosity fields are retained; plain luminosity fields can be cumulative.
 
-OMS and RR raw JSONs combine API responses into one annual file, retaining their returned field values; they are merged JSON, not byte-for-byte HTTP archives. Existing migrated OMS data can contain extra fields from earlier queries. There are no source/checksum sidecars or separate reference snapshots. Public DCS JSONs describe tracker readiness; Muon readiness bits come separately from OMS.
+Raw means selected source values, not a full HTTP archive: OMS stores only those nine LS attributes; RR stores run number, deleted status and numeric status counts for the 14 selected components. API wrappers, workflow attributes, embedded Run information and comments are discarded. The RR endpoint returns broader records over the network, but only the selected values are kept. Summary CSVs flatten OMS rows or convert RR counts to verdicts. Public DCS JSONs remain unchanged and describe tracker readiness.
 
 RR defaults to the yearly PromptReco query (`--years 2025`). Its CSV has run_number plus cms, muon, dt, csc, rpc, gem, tracker_pixel, tracker_strip, tracking, ecal, hcal, hlt, l1t and lumi columns. Any BAD LS makes that component bad; exclusively GOOD makes it good; other or missing states remain unknown. This table supplies run labels, not the locations of bad LS. Model labels use the muon column from the annual CSVs.
 

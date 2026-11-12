@@ -16,10 +16,9 @@ MANIFEST = Path("output/dataset/runs.csv")
 OMS = "https://cmsoms.cern.ch/agg/api/v1/"
 RR = "https://cmsrunregistry.web.cern.ch/api"
 OMS_FIELDS = (
-    "run_number", "lumisection_number", "fill_number", "start_time", "end_time",
+    "run_number", "lumisection_number", "start_time", "end_time",
     "delivered_lumi_per_lumisection", "recorded_lumi_per_lumisection", "pileup",
-    "beams_stable", "cms_active", "dt0_ready", "dtm_ready", "dtp_ready",
-    "rpc_ready", "cscm_ready", "cscp_ready",
+    "beams_stable", "cms_active",
 )
 RR_COMPONENTS = {
     "cms": "cms-cms", "muon": "muon-muon", "dt": "dt-dt", "csc": "csc-csc",
@@ -104,8 +103,8 @@ def dcs_collect(years, *, offline=False, session=None):
 
 
 def oms_pages(session, endpoint, query):
-    """Use next-link pagination parameters only, always on the public host."""
-    params, pages, seen, count = {"page[limit]": 1000, **query}, [], set(), 0
+    """Read all pages, retaining only requested LS attributes."""
+    params, selected, seen = {"page[limit]": 1000, **query}, [], set()
     while True:
         key = tuple(sorted((name, str(value)) for name, value in params.items()))
         if key in seen:
@@ -115,14 +114,14 @@ def oms_pages(session, endpoint, query):
         rows = payload.get("data")
         if not isinstance(rows, list):
             raise ValueError("Expected an OMS data array")
-        pages.append(payload); count += len(rows)
+        selected.extend({name: row["attributes"].get(name) for name in OMS_FIELDS} for row in rows)
         link = payload.get("links", {}).get("next")
         link = link.get("href") if isinstance(link, dict) else link
         if not link:
             total = payload.get("meta", {}).get("totalResourceCount")
-            if total is not None and count != int(total):
+            if total is not None and len(selected) != int(total):
                 raise ValueError("Incomplete OMS pagination")
-            return pages
+            return selected
         pagination = {name: value for name, value in parse_qsl(urlsplit(link).query)
                       if name.startswith("page[")}
         if not rows or endpoint != "lumisections" or not pagination:
@@ -131,21 +130,14 @@ def oms_pages(session, endpoint, query):
 
 
 def oms_table(payload):
-    rows = [row["attributes"] for page in payload["lumisections"] for row in page["data"]]
-    frame = pd.DataFrame([{name: row.get(name) for name in OMS_FIELDS} for row in rows], columns=OMS_FIELDS)
+    frame = pd.DataFrame(payload["lumisections"], columns=OMS_FIELDS)
     frame = frame.rename(columns={"lumisection_number": "ls_number"})
     if (frame[["run_number", "ls_number"]].isna().any().any()
             or (frame[["run_number", "ls_number"]] <= 0).any().any()
             or frame.duplicated(["run_number", "ls_number"]).any()):
         raise ValueError("Invalid or duplicate OMS run/LS identifiers")
-    fills = [row["attributes"] for page in payload["fills"] for row in page["data"]]
-    bunches = {row["fill_number"]: row.get("bunches_colliding") for row in fills}
-    if len(bunches) != len(fills):
-        raise ValueError("Duplicate OMS fill metadata")
-    for name in OMS_FIELDS:
-        if name.endswith("_ready") or name in ("beams_stable", "cms_active"):
-            frame[name] = frame[name].astype("boolean")
-    frame["bunches_colliding"] = frame.fill_number.map(bunches)
+    for name in ("beams_stable", "cms_active"):
+        frame[name] = frame[name].astype("boolean")
     return frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
 
 
@@ -155,9 +147,8 @@ def oms_summary(year):
 
 def oms_collect_run(run, session, years=None, cache=None):
     """Update one run; an optional batch cache defers annual file writes."""
-    pages = oms_pages(session, "lumisections", {
+    rows = oms_pages(session, "lumisections", {
         "filter[run_number][EQ]": run, "fields": ",".join(OMS_FIELDS)})
-    rows = [row["attributes"] for page in pages for row in page["data"]]
     if not rows or any(row.get("run_number") != run for row in rows):
         raise ValueError("OMS run unavailable or returned another run")
     try:
@@ -172,22 +163,11 @@ def oms_collect_run(run, session, years=None, cache=None):
     path = raw_path("oms", year)
     previous = cache.get(year) if cache is not None else None
     if previous is None:
-        previous = json.loads(path.read_text()) if path.exists() else dict(lumisections=[], fills=[])
-    # Each stored page belongs to one queried run. New lists leave the previous
-    # cache untouched if any request or validation below fails.
-    raw = {"lumisections": [page for page in previous["lumisections"] if not page["data"]
-                            or page["data"][0]["attributes"].get("run_number") != run] + pages,
-           "fills": list(previous["fills"])}
-    cached = {row["attributes"]["fill_number"] for page in raw["fills"] for row in page["data"]}
-    needed = {row.get("fill_number") for row in rows}
-    for fill in sorted(number for number in needed if number is not None and number > 0 and number not in cached):
-        fill_pages = oms_pages(session, "fills", {
-            "filter[fill_number][EQ]": fill, "fields": "fill_number,bunches_colliding"})
-        if any(row["attributes"].get("fill_number") != fill for page in fill_pages for row in page["data"]):
-            raise ValueError("OMS returned another fill")
-        raw["fills"].extend(fill_pages)
+        previous = json.loads(path.read_text()) if path.exists() else dict(lumisections=[])
+    raw = {"lumisections": [row for row in previous["lumisections"]
+                            if row.get("run_number") != run] + rows}
     if cache is not None:
-        table = oms_table({"lumisections": pages, "fills": raw["fills"]})
+        table = oms_table({"lumisections": rows})
         cache[year] = raw
         return table
     table = oms_table(raw)
@@ -238,13 +218,9 @@ def rr_verdict(counts):
 
 def rr_summary(year):
     payload = json.loads(raw_path("rr", year).read_text())
-    rows = []
-    for page in payload["pages"]:
-        for dataset in page["datasets"]:
-            triplets = (dataset.get("DatasetTripletCache") or {}).get("triplet_summary") or {}
-            rows.append({"run_number": dataset["run_number"], **{
-                name: "unknown" if dataset.get("deleted") else rr_verdict(triplets.get(component) or {})
-                for name, component in RR_COMPONENTS.items()}})
+    rows = [{"run_number": run["run_number"], **{
+        name: "unknown" if run["deleted"] else rr_verdict(run["components"].get(name) or {})
+        for name in RR_COMPONENTS}} for run in payload["runs"]]
     frame = pd.DataFrame(rows, columns=["run_number", *RR_COMPONENTS])
     if frame.run_number.duplicated().any():
         raise ValueError("Duplicate RR run verdicts")
@@ -252,7 +228,7 @@ def rr_summary(year):
 
 
 def rr_collect_year(year, session):
-    pages, runs, expected, page = [], set(), None, 0
+    records, runs, expected, page = [], set(), None, 0
     name = f"/PromptReco/Collisions{year}/DQM"
     while True:
         query = dict(page=page, filter={"name": name}, page_size=100, sortings=[])
@@ -266,13 +242,17 @@ def rr_collect_year(year, session):
             if row["name"] != name or row["run_number"] in runs:
                 raise ValueError("Duplicate or unexpected RR dataset")
             runs.add(row["run_number"])
-        pages.append(payload)
+            triplets = (row.get("DatasetTripletCache") or {}).get("triplet_summary") or {}
+            records.append({"run_number": row["run_number"], "deleted": bool(row.get("deleted")),
+                            "components": {short: {key: value for key, value in
+                                (triplets.get(component) or {}).items() if isinstance(value, (int, float))}
+                                for short, component in RR_COMPONENTS.items()}})
         if len(runs) == expected:
             break
         if len(runs) > expected or not rows:
             raise ValueError("Incomplete RR pagination")
         page += 1
-    write_json(raw_path("rr", year), {"pages": pages})
+    write_json(raw_path("rr", year), {"runs": records})
     return rr_summary(year)
 
 
