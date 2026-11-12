@@ -13,7 +13,7 @@ from scripts.models.config import IDS, OUT
 from scripts.data.dials import load_run_labels
 
 
-LS_COLORS = {"good": "#1769c2", "bad": "#c43c3c", "unknown": "#777777"}
+LS_COLORS = {"good": "#27834b", "bad": "#c43c3c", "unknown": "#e6b800"}
 
 
 def save(fig, path):
@@ -68,7 +68,7 @@ def _axis(ax, frame, values, *, log=False):
     for status, color in LS_COLORS.items():
         selected = visible & frame.label.eq(status).to_numpy()
         ax.scatter(np.flatnonzero(selected), values[selected], s=9, color=color,
-                   alpha=.65, linewidths=0, rasterized=True, label=f"{status.title()} LS")
+                   alpha=.9, linewidths=0, rasterized=True, label=f"{status.title()} LS")
     ax.axhline(1, color="black", linestyle="--", label="Threshold")
     if runs:
         # Short runs remain visible, but nearby run labels must not overlap.
@@ -79,16 +79,15 @@ def _axis(ax, frame, values, *, log=False):
                 ticks.append(index)
         if len(runs) > 1:
             ticks.append(len(runs) - 1)
-        top = ax.secondary_xaxis("top")
-        top.set_xticks([positions[i] for i in ticks], [str(runs[i]) for i in ticks], rotation=90)
-        top.set_xlabel("Run number")
-        ax.tick_params(axis="x", top=False)
+        ax.set_xticks([positions[i] for i in ticks], [str(runs[i]) for i in ticks], rotation=90)
+    ax.tick_params(axis="x", which="both", top=False)
+    ax.tick_params(axis="x", which="minor", bottom=False)
     notes = _notes(values, log)
     if notes:
         ax.text(.01, .78, notes, transform=ax.transAxes, va="top",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": .9})
     ax.set(xlim=(-.5, max(.5, len(frame) - .5)), ylim=_limits(values) if log else (0, 5),
-           xlabel="Cumulative LS", ylabel="Anomaly score / threshold")
+           xlabel="Run number", ylabel="Anomaly score / threshold")
     if log:
         ax.set_yscale("log")
 
@@ -97,12 +96,10 @@ def score_view(frame, threshold, path, *, label="Test", log=False):
     """Keep unscored rows on the LS axis; only DCS-off rows are excluded."""
     hep.style.use("CMS")
     frame = _ordered(frame)
-    fig, (header, ax) = plt.subplots(2, 1, figsize=(11, 7.5), layout="constrained",
-                                     gridspec_kw={"height_ratios": [.04, 1]})
-    header.set_axis_off()
+    fig, ax = plt.subplots(figsize=(14, 8.5), layout="constrained")
     _axis(ax, frame, _values(frame, threshold), log=log)
     ax.legend(loc="upper right", ncol=4, markerscale=2)
-    hep.cms.label(ax=header, text="Work in Progress", data=True, com=None, rlabel=label)
+    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
     save(fig, path)
 
 
@@ -110,15 +107,13 @@ def _distribution(frame, threshold, path, log):
     values = _values(frame, threshold)
     limits = _limits(values) if log else (0, 5)
     bins = np.geomspace(*limits, 61) if log else np.linspace(*limits, 61)
-    fig, ax = plt.subplots(figsize=(9, 6.5), layout="constrained")
-    for name, mask, color in (("Good", frame.label.eq("good"), "#27834b"),
-                               ("Bad", frame.label.eq("bad"), "#c43c3c"),
-                               ("Unknown", frame.label.eq("unknown"), "grey")):
-        selected = values[mask]
+    fig, ax = plt.subplots(figsize=(11, 7.5), layout="constrained")
+    for status, color in LS_COLORS.items():
+        selected = values[frame.label.eq(status)]
         scored = np.isfinite(selected)
         visible = scored & ((selected > 0) if log else True)
         if scored.any():
-            label = f"{name} ({scored.sum():,} scored, {(~scored).sum():,} unscored)"
+            label = f"{status.title()} ({scored.sum():,})"
             ax.hist(selected[visible], bins=bins, weights=np.full(visible.sum(), 1 / scored.sum()),
                     histtype="step", linewidth=2, color=color, label=label)
     ax.axvline(1, color="black", linestyle="--", label="Threshold")
