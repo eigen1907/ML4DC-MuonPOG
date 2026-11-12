@@ -5,17 +5,15 @@ import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-from matplotlib.patches import Patch
 import mplhep as hep
 import numpy as np
 import pandas as pd
 
-from scripts.models.config import IDS, OUT, REGIONS
+from scripts.models.config import IDS, OUT
 from scripts.data.dials import load_run_labels
 
 
-BLUE, GREEN, RED, GREY = "#1769c2", "#cde8d1", "#f3bcbc", "#e0e0e0"
+LS_COLORS = {"good": "#1769c2", "bad": "#c43c3c", "unknown": "#777777"}
 
 
 def save(fig, path):
@@ -58,60 +56,53 @@ def _notes(values, log):
     return "; ".join(notes)
 
 
-def _axis(ax, frame, values, *, log=False, regions=False):
+def _axis(ax, frame, values, *, log=False):
     runs, positions = [], []
-    for (_, run), group in frame.groupby(["dataset", "run_number"], sort=False):
+    for run, group in frame.groupby("run_number", sort=False):
         first, last = group.index[0], group.index[-1]
-        color = {"good": GREEN, "bad": RED}.get(group.label.iloc[0], GREY)
-        ax.axvspan(first - .5, last + .5, color=color, zorder=0)
+        if first:
+            ax.axvline(first - .5, color="0.85", linewidth=.5, zorder=0)
         runs.append(run)
         positions.append((first + last) / 2)
     visible = np.isfinite(values) & ((values > 0) if log else True)
-    ax.scatter(np.flatnonzero(visible), values[visible], s=9, color=BLUE,
-               alpha=.5, linewidths=0, rasterized=True)
-    ax.axhline(1, color="black", linestyle="--")
+    for status, color in LS_COLORS.items():
+        selected = visible & frame.label.eq(status).to_numpy()
+        ax.scatter(np.flatnonzero(selected), values[selected], s=9, color=color,
+                   alpha=.65, linewidths=0, rasterized=True, label=f"{status.title()} LS")
+    ax.axhline(1, color="black", linestyle="--", label="Threshold")
     if runs:
-        ticks = {0, len(runs) - 1}
-        ticks.update(np.argmin(np.abs(np.asarray(positions) - x))
-                     for x in np.linspace(0, len(frame) - 1, 8))
-        ax.set_xticks([positions[i] for i in sorted(ticks)], [str(runs[i]) for i in sorted(ticks)])
-    if regions:
-        for name, members in REGIONS.items():
-            selected = frame.index[frame.run_number.isin(members)]
-            if len(selected):
-                first, last = selected[0], selected[-1]
-                ax.axvspan(first - .5, last + .5, fill=False, edgecolor="#b2182b", linestyle="--")
-                ax.text((first + last) / 2, .03, name, transform=ax.get_xaxis_transform(),
-                        ha="center", color="#b2182b",
-                        bbox={"facecolor": "white", "edgecolor": "none", "alpha": .9})
+        # Short runs remain visible, but nearby run labels must not overlap.
+        gap = len(frame) / 20
+        ticks = [0]
+        for index in range(1, len(runs) - 1):
+            if positions[index] - positions[ticks[-1]] >= gap and positions[-1] - positions[index] >= gap:
+                ticks.append(index)
+        if len(runs) > 1:
+            ticks.append(len(runs) - 1)
+        top = ax.secondary_xaxis("top")
+        top.set_xticks([positions[i] for i in ticks], [str(runs[i]) for i in ticks], rotation=90)
+        top.set_xlabel("Run number")
+        ax.tick_params(axis="x", top=False)
     notes = _notes(values, log)
     if notes:
         ax.text(.01, .78, notes, transform=ax.transAxes, va="top",
                 bbox={"facecolor": "white", "edgecolor": "none", "alpha": .9})
     ax.set(xlim=(-.5, max(.5, len(frame) - .5)), ylim=_limits(values) if log else (0, 5),
-           xlabel="Run number", ylabel="Anomaly score / threshold")
+           xlabel="Cumulative LS", ylabel="Anomaly score / threshold")
     if log:
         ax.set_yscale("log")
 
 
-def _handles(unknown=False):
-    handles = [Patch(facecolor=GREEN, edgecolor="#5a9e68", label="Good"),
-            Patch(facecolor=RED, edgecolor="#be6868", label="Bad"),
-            Line2D([], [], color="black", linestyle="--", label="Threshold"),
-            Line2D([], [], color=BLUE, marker="o", linestyle="none", label="LS")]
-    if unknown:
-        handles.append(Patch(facecolor=GREY, edgecolor="grey", label="Unknown"))
-    return handles
-
-
-def score_view(frame, threshold, path, *, label="Test", log=False, regions=False):
+def score_view(frame, threshold, path, *, label="Test", log=False):
     """Keep unscored rows on the LS axis; only DCS-off rows are excluded."""
     hep.style.use("CMS")
     frame = _ordered(frame)
-    fig, ax = plt.subplots(figsize=(11, 6.2), layout="constrained")
-    _axis(ax, frame, _values(frame, threshold), log=log, regions=regions)
-    ax.legend(handles=_handles(frame.label.eq("unknown").any()), loc="upper right", ncol=4)
-    hep.cms.label(ax=ax, text="Work in Progress", data=True, com=None, rlabel=label)
+    fig, (header, ax) = plt.subplots(2, 1, figsize=(11, 7.5), layout="constrained",
+                                     gridspec_kw={"height_ratios": [.04, 1]})
+    header.set_axis_off()
+    _axis(ax, frame, _values(frame, threshold), log=log)
+    ax.legend(loc="upper right", ncol=4, markerscale=2)
+    hep.cms.label(ax=header, text="Work in Progress", data=True, com=None, rlabel=label)
     save(fig, path)
 
 
@@ -149,7 +140,7 @@ def plot_stage(scores, history, threshold, folder):
     test = _ordered(scores.loc[scores.split.eq("test")])
     for log in (False, True):
         suffix = "_log" if log else ""
-        score_view(test, threshold, folder / f"test{suffix}.png", log=log, regions=True)
+        score_view(test, threshold, folder / f"test{suffix}.png", log=log)
         _distribution(test, threshold, folder / f"distributions{suffix}.png", log)
     if history is not None:
         fig, ax = plt.subplots(figsize=(9, 6), layout="constrained")

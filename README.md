@@ -10,6 +10,8 @@ Cached MEs + metadata → preprocessing → train → checkpoint → predict →
 
 Training saves the model, fitted scaling and a fixed Good-calibration threshold. Prediction uses that checkpoint without fitting or recalibrating. Plotting reads saved predictions independently.
 
+Test plots color LS points by the run's Good/Bad/Unknown assessment. The bottom axis counts consecutive LS; the top shows run numbers with crowded labels omitted. Thin lines mark every run boundary.
+
 ```bash
 # Optional metadata updates; no DIALS download
 bash runs/data/dcs.sh --years 2025
