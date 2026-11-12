@@ -22,10 +22,12 @@ class DataTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         for key, value in {"RAW": self.root / "raw", "MANIFEST": self.root / "runs.csv",
-                           "RUN_LABELS": self.root / "labels.csv", "DCS_PATH": self.root / "dcs.json"}.items():
+                           "RR_SUMMARY": self.root / "rr", "DCS_PATH": self.root / "dcs.json"}.items():
             patcher = patch.object(data, key, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        data.RR_SUMMARY.mkdir()
+        self.labels_path = data.RR_SUMMARY/"2025.csv"
 
     def cache(self):
         self.names = [f"{stem}.parquet" for stem in data.MODEL_MES] + [
@@ -39,12 +41,12 @@ class DataTests(unittest.TestCase):
                 run = offset + index
                 label = "good" if index < 6 else "bad"
                 rows.append({"dataset": dataset, "run_number": run, "ls_count": 2, "ls_completeness": 1.})
-                labels.append({"run_number": run, "label": label})
+                labels.append({"run_number": run, "muon": label})
                 for name in self.names:
                     self.write_me(dataset, run, name)
         manifest = pd.DataFrame(rows)
         manifest.to_csv(data.MANIFEST, index=False)
-        pd.DataFrame(labels).to_csv(data.RUN_LABELS, index=False)
+        pd.DataFrame(labels).to_csv(self.labels_path, index=False)
         data.DCS_PATH.write_text(json.dumps({str(row["run_number"]): [[1, 2]] for row in rows}))
         return manifest
 
@@ -65,6 +67,27 @@ class DataTests(unittest.TestCase):
         # Scalar dtypes must not change the historical float32 bin positions.
         np.testing.assert_array_equal(data._moments(np.array([[1, 2, 3]]), 0, 1),
                                       data._moments(np.array([[1, 2, 3]]), np.float64(0), np.float64(1)))
+
+    def test_annual_rr_component_tables_use_muon_and_ignore_nonannual_files(self):
+        pd.DataFrame({"run_number": [1, 2], "muon": ["good", "bad"],
+                      "dt": ["bad", "good"]}).to_csv(self.labels_path, index=False)
+        pd.DataFrame({"run_number": [3], "muon": ["unknown"]}).to_csv(
+            data.RR_SUMMARY/"2026.csv", index=False)
+        (data.RR_SUMMARY/"runs.csv").write_text("obsolete,not,a,component,table\n")
+        self.assertEqual(data.load_run_labels().to_dict(), {1: "good", 2: "bad", 3: "unknown"})
+        for values in [dict(run_number=[1], muon=["good"]),
+                       dict(run_number=[4], muon=["NOTSET"]),
+                       dict(run_number=[0], muon=["good"]),
+                       dict(run_number=[4.5], muon=["good"]),
+                       dict(run_number=["invalid"], muon=["good"])]:
+            with self.subTest(values=values):
+                pd.DataFrame(values).to_csv(data.RR_SUMMARY/"2027.csv", index=False)
+                with self.assertRaises(ValueError):
+                    data.load_run_labels()
+
+    def test_absent_annual_rr_metadata_requests_collection(self):
+        with self.assertRaisesRegex(FileNotFoundError, "collect RR metadata first"):
+            data.load_run_labels()
 
     def test_single_read_split_before_cache_filter_and_root_entries(self):
         manifest = self.cache()
@@ -119,8 +142,8 @@ class DataTests(unittest.TestCase):
 
     def test_missing_rr_labels_are_unknown_and_never_enter_training(self):
         self.cache()
-        labels = pd.read_csv(data.RUN_LABELS)
-        labels.loc[labels.run_number.ne(106)].to_csv(data.RUN_LABELS, index=False)
+        labels = pd.read_csv(self.labels_path)
+        labels.loc[labels.run_number.ne(106)].to_csv(self.labels_path, index=False)
         loaded = data.load_dataset()
         missing = loaded['frame'].loc[loaded['frame'].run_number.eq(106)]
         self.assertTrue(missing.label.eq('unknown').all())
@@ -130,9 +153,9 @@ class DataTests(unittest.TestCase):
 
     def test_insufficient_rr_good_coverage_fails_with_a_clear_reason(self):
         self.cache()
-        labels = pd.read_csv(data.RUN_LABELS)
-        labels.loc[labels.run_number.ne(100), 'label'] = 'unknown'
-        labels.to_csv(data.RUN_LABELS, index=False)
+        labels = pd.read_csv(self.labels_path)
+        labels.loc[labels.run_number.ne(100), 'muon'] = 'unknown'
+        labels.to_csv(self.labels_path, index=False)
         with self.assertRaisesRegex(ValueError, 'Not enough RR-labelled Good runs'):
             data.load_dataset()
 

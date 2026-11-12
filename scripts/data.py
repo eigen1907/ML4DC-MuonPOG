@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 from config import (DCS_PATH, IDS, MANIFEST, MODEL_MES, PROMPT_RECO_PATTERN,
-                    RAW, REGIONS, RUN_LABELS, SEED, SPECIAL_RUNS, raw_folder)
+                    RAW, REGIONS, RR_SUMMARY, SEED, SPECIAL_RUNS, raw_folder)
 
 
 def _integers(values, dtype, description):
@@ -68,10 +68,15 @@ def select(frame, intervals, phi_entries):
 
 
 def load_run_labels():
-    """Read RR-derived Good/Bad/unknown labels; absence never means Good."""
-    labels = pd.read_csv(RUN_LABELS)
-    if (not {"run_number", "label"}.issubset(labels.columns)
-            or labels.run_number.duplicated().any()
+    """Use the Muon column from annual RR tables; absence never means Good."""
+    files = sorted(RR_SUMMARY.glob("[0-9][0-9][0-9][0-9].csv"))
+    if not files:
+        raise FileNotFoundError("No annual RR summaries; collect RR metadata first")
+    labels = pd.concat([pd.read_csv(path, usecols=["run_number", "muon"]) for path in files],
+                       ignore_index=True).rename(columns={"muon": "label"})
+    labels["run_number"] = _integers(pd.to_numeric(labels.run_number, errors="coerce"),
+                                    np.int64, "RR run numbers")
+    if ((labels.run_number <= 0).any() or labels.run_number.duplicated().any()
             or not labels.label.isin(("good", "bad", "unknown")).all()):
         raise ValueError("Expected unique run numbers and good/bad/unknown RR labels")
     return labels.set_index("run_number").label

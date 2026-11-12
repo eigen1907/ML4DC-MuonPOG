@@ -1,8 +1,7 @@
-"""Collect DCS, OMS or Run Registry metadata as raw JSON and small CSV summaries."""
+"""Collect yearly DCS, OMS and Run Registry JSON and compact CSV tables."""
 
 import argparse
-from datetime import datetime, timezone
-import hashlib
+from datetime import datetime
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,6 @@ from urllib.parse import parse_qsl, urlsplit
 
 import pandas as pd
 import requests
-
 
 DATA = Path("data")
 MANIFEST = Path("output/dataset/runs.csv")
@@ -23,7 +21,13 @@ OMS_FIELDS = (
     "beams_stable", "cms_active", "dt0_ready", "dtm_ready", "dtp_ready",
     "rpc_ready", "cscm_ready", "cscp_ready",
 )
-RR_FIELDS = ("run_number", "rr_dataset", "start", "end", "status", "label", "comment", "cause")
+RR_COMPONENTS = {
+    "cms": "cms-cms", "muon": "muon-muon", "dt": "dt-dt", "csc": "csc-csc",
+    "rpc": "rpc-rpc", "gem": "gem-gem", "tracker_pixel": "tracker-pixel",
+    "tracker_strip": "tracker-strip", "tracking": "tracker-track",
+    "ecal": "ecal-ecal", "hcal": "hcal-hcal", "hlt": "hlt-hlt",
+    "l1t": "l1t-l1t", "lumi": "lumi-lumi",
+}
 
 
 def setup_tls():
@@ -32,45 +36,34 @@ def setup_tls():
         truststore.inject_into_ssl()
 
 
-def save_response(response, path):
-    """Save successful JSON response bodies byte-for-byte, without auth headers."""
+def json_response(response):
     response.raise_for_status()
     if "json" not in response.headers.get("content-type", "").lower():
         raise ValueError("Expected JSON; check CERN authentication")
-    payload = json.loads(response.content)
+    return json.loads(response.content)
+
+
+def raw_path(source, year):
+    return DATA/source/"raw"/f"{year}.json"
+
+
+def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(response.content)
-    return payload, dict(file=path.name, url=response.url,
-                         retrieved_at_utc=datetime.now(timezone.utc).isoformat(),
-                         sha256=hashlib.sha256(response.content).hexdigest())
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
 
 
-def write_source(folder, records, **extra):
-    (folder/"source.json").write_text(json.dumps(
-        dict(complete=True, requests=records, **extra), indent=2) + "\n")
-
-
-def read_raw(folder):
-    source = json.loads((folder/"source.json").read_text())
-    if not source.get("complete", True):
-        raise ValueError("Incomplete raw metadata download")
-    saved = {}
-    for record in source["requests"]:
-        name = record["file"]
-        if Path(name).name != name or name in saved:
-            raise ValueError("Invalid raw filename")
-        body = (folder/name).read_bytes()
-        if hashlib.sha256(body).hexdigest() != record["sha256"]:
-            raise ValueError(f"Raw metadata changed: {name}")
-        saved[name] = json.loads(body)
-    return source, saved
-
-
-def write_csv(frame, source, name):
+def write_csv(frame, source, year):
     folder = DATA/source/"summary"
     folder.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(folder/f"{name}.csv", index=False)
+    frame.to_csv(folder/f"{year}.csv", index=False)
     return frame
+
+
+def annual_years(source):
+    return sorted(int(path.stem) for path in (DATA/source/"raw").glob("*.json")
+                  if path.stem.isdigit() and len(path.stem) == 4)
 
 
 def dcs_url(year):
@@ -84,19 +77,15 @@ def dcs_url(year):
 
 
 def dcs_collect(years, *, offline=False, session=None):
-    """Public tracker-ready intervals, not Muon certification labels."""
+    """Public tracker-ready intervals; preserve downloaded JSON bytes."""
     session = session or requests.Session()
     for year in years:
-        raw = DATA/"dcs/raw"/f"{year}.json"
+        path = raw_path("dcs", year)
         if offline:
-            body = raw.read_bytes()
-            record = json.loads(raw.with_suffix(".source.json").read_text())
-            if hashlib.sha256(body).hexdigest() != record["sha256"]:
-                raise ValueError("Raw DCS metadata changed")
-            payload = json.loads(body)
+            payload = json.loads(path.read_bytes())
         else:
-            payload, record = save_response(session.get(dcs_url(year), timeout=60), raw)
-            raw.with_suffix(".source.json").write_text(json.dumps(record, indent=2) + "\n")
+            response = session.get(dcs_url(year), timeout=60)
+            payload = json_response(response)
         if not isinstance(payload, dict) or not payload:
             raise ValueError("Expected nonempty DCS run/LS intervals")
         rows = []
@@ -108,75 +97,121 @@ def dcs_collect(years, *, offline=False, session=None):
                         or any(type(x) is not int for x in pair) or not 0 < pair[0] <= pair[1]):
                     raise ValueError("Invalid inclusive DCS LS range")
                 rows.append((int(run), *pair))
+        if not offline:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(response.content)
         write_csv(pd.DataFrame(rows, columns=["run_number", "first_ls", "last_ls"]), "dcs", year)
 
 
-def oms_pages(session, endpoint, query, folder, stem):
-    """Follow pagination parameters only; never forward credentials to internal links."""
-    params = {"page[limit]": 1000, **query}
-    rows, records, seen = [], [], set()
+def oms_pages(session, endpoint, query):
+    """Use next-link pagination parameters only, always on the public host."""
+    params, pages, seen, count = {"page[limit]": 1000, **query}, [], set(), 0
     while True:
-        key = tuple(sorted((k, str(v)) for k, v in params.items()))
+        key = tuple(sorted((name, str(value)) for name, value in params.items()))
         if key in seen:
             raise ValueError("OMS pagination did not advance")
         seen.add(key)
-        name = f"{stem}_{len(records)+1:04d}.json" if stem == "lumisections" else f"{stem}.json"
-        payload, record = save_response(session.get(OMS+endpoint, params=params, timeout=60), folder/name)
-        page = payload.get("data")
-        if not isinstance(page, list):
+        payload = json_response(session.get(OMS+endpoint, params=params, timeout=60))
+        rows = payload.get("data")
+        if not isinstance(rows, list):
             raise ValueError("Expected an OMS data array")
-        rows.extend(page); records.append(record)
+        pages.append(payload); count += len(rows)
         link = payload.get("links", {}).get("next")
         link = link.get("href") if isinstance(link, dict) else link
         if not link:
             total = payload.get("meta", {}).get("totalResourceCount")
-            if total is not None and len(rows) != int(total):
+            if total is not None and count != int(total):
                 raise ValueError("Incomplete OMS pagination")
-            return rows, records
-        pagination = {k: v for k, v in parse_qsl(urlsplit(link).query) if k.startswith("page[")}
-        if not page or stem != "lumisections" or not pagination:
+            return pages
+        pagination = {name: value for name, value in parse_qsl(urlsplit(link).query)
+                      if name.startswith("page[")}
+        if not rows or endpoint != "lumisections" or not pagination:
             raise ValueError("Invalid OMS pagination")
         params = {**query, **pagination}
 
 
-def oms_collect_run(run, session):
-    folder = DATA/"oms/raw"/str(run)
-    (folder/"source.json").unlink(missing_ok=True)
-    runs, records = oms_pages(session, "runs", {"filter[run_number][EQ]": run}, folder, "runs")
-    if len(runs) != 1 or runs[0]["attributes"].get("run_number") != run:
-        raise ValueError("OMS run unavailable")
-    rows, pages = oms_pages(session, "lumisections", {"filter[run_number][EQ]": run}, folder, "lumisections")
-    records.extend(pages)
-    fills = {row["attributes"].get("fill_number") for row in rows}
-    for fill in sorted(number for number in fills if number is not None and number > 0):
-        values, pages = oms_pages(session, "fills", {"filter[fill_number][EQ]": fill}, folder, f"fills_{fill}")
-        if any(row["attributes"].get("fill_number") != fill for row in values):
-            raise ValueError("OMS returned another fill")
-        records.extend(pages)
-    write_source(folder, records, run_number=run, units="API units unchanged")
-    return oms_summary(run)
-
-
-def oms_summary(run):
-    _, saved = read_raw(DATA/"oms/raw"/str(run))
-    run_rows = saved["runs.json"]["data"]
-    if len(run_rows) != 1 or run_rows[0]["attributes"].get("run_number") != run:
-        raise ValueError("OMS run does not match")
-    fills = [row["attributes"] for name, data in saved.items() if name.startswith("fills_") for row in data["data"]]
+def oms_table(payload):
+    rows = [row["attributes"] for page in payload["lumisections"] for row in page["data"]]
+    frame = pd.DataFrame([{name: row.get(name) for name in OMS_FIELDS} for row in rows], columns=OMS_FIELDS)
+    frame = frame.rename(columns={"lumisection_number": "ls_number"})
+    if (frame[["run_number", "ls_number"]].isna().any().any()
+            or (frame[["run_number", "ls_number"]] <= 0).any().any()
+            or frame.duplicated(["run_number", "ls_number"]).any()):
+        raise ValueError("Invalid or duplicate OMS run/LS identifiers")
+    fills = [row["attributes"] for page in payload["fills"] for row in page["data"]]
     bunches = {row["fill_number"]: row.get("bunches_colliding") for row in fills}
     if len(bunches) != len(fills):
-        raise ValueError("Duplicate OMS fill")
-    rows = [row["attributes"] for name, data in saved.items() if name.startswith("lumisections_") for row in data["data"]]
-    frame = pd.DataFrame([{key: row.get(key) for key in OMS_FIELDS} for row in rows], columns=OMS_FIELDS)
-    frame = frame.rename(columns={"lumisection_number": "ls_number"})
-    if (not frame.run_number.eq(run).all() or frame.ls_number.isna().any()
-            or (frame.ls_number <= 0).any() or frame.ls_number.duplicated().any()):
-        raise ValueError("Invalid OMS run/LS identifiers")
-    for key in OMS_FIELDS:
-        if key.endswith("_ready") or key in ("beams_stable", "cms_active"):
-            frame[key] = frame[key].astype("boolean")
+        raise ValueError("Duplicate OMS fill metadata")
+    for name in OMS_FIELDS:
+        if name.endswith("_ready") or name in ("beams_stable", "cms_active"):
+            frame[name] = frame[name].astype("boolean")
     frame["bunches_colliding"] = frame.fill_number.map(bunches)
-    return write_csv(frame.sort_values("ls_number"), "oms", run)
+    return frame.sort_values(["run_number", "ls_number"]).reset_index(drop=True)
+
+
+def oms_summary(year):
+    return write_csv(oms_table(json.loads(raw_path("oms", year).read_text())), "oms", year)
+
+
+def oms_collect_run(run, session, years=None, cache=None):
+    """Update one run; an optional batch cache defers annual file writes."""
+    pages = oms_pages(session, "lumisections", {
+        "filter[run_number][EQ]": run, "fields": ",".join(OMS_FIELDS)})
+    rows = [row["attributes"] for page in pages for row in page["data"]]
+    if not rows or any(row.get("run_number") != run for row in rows):
+        raise ValueError("OMS run unavailable or returned another run")
+    try:
+        observed_years = {datetime.fromisoformat(row["start_time"].replace("Z", "+00:00")).year for row in rows}
+    except (KeyError, TypeError, ValueError, AttributeError) as error:
+        raise ValueError("OMS LS timestamps are needed to select the annual file") from error
+    if len(observed_years) != 1:
+        raise ValueError("OMS run spans multiple years; no annual file was changed")
+    year = observed_years.pop()
+    if years and year not in years:
+        raise ValueError("OMS run does not belong to the requested year")
+    path = raw_path("oms", year)
+    previous = cache.get(year) if cache is not None else None
+    if previous is None:
+        previous = json.loads(path.read_text()) if path.exists() else dict(lumisections=[], fills=[])
+    # Each stored page belongs to one queried run. New lists leave the previous
+    # cache untouched if any request or validation below fails.
+    raw = {"lumisections": [page for page in previous["lumisections"] if not page["data"]
+                            or page["data"][0]["attributes"].get("run_number") != run] + pages,
+           "fills": list(previous["fills"])}
+    cached = {row["attributes"]["fill_number"] for page in raw["fills"] for row in page["data"]}
+    needed = {row.get("fill_number") for row in rows}
+    for fill in sorted(number for number in needed if number is not None and number > 0 and number not in cached):
+        fill_pages = oms_pages(session, "fills", {
+            "filter[fill_number][EQ]": fill, "fields": "fill_number,bunches_colliding"})
+        if any(row["attributes"].get("fill_number") != fill for page in fill_pages for row in page["data"]):
+            raise ValueError("OMS returned another fill")
+        raw["fills"].extend(fill_pages)
+    if cache is not None:
+        table = oms_table({"lumisections": pages, "fills": raw["fills"]})
+        cache[year] = raw
+        return table
+    table = oms_table(raw)
+    write_json(path, raw)
+    return write_csv(table, "oms", year)
+
+
+def oms_collect_runs(runs, session, years=None, auth=None):
+    """Collect a batch in memory and save each annual raw/summary pair once."""
+    cache, saved, failed = {}, 0, 0
+    for run in runs:
+        try:
+            if auth is not None:
+                session.headers.update(auth.authparams()["headers"])
+            oms_collect_run(run, session, years, cache)
+            saved += 1
+        except (requests.RequestException, ValueError, OSError, KeyError) as error:
+            failed += 1
+            print(f"OMS run {run} skipped: {error}", file=sys.stderr)
+    for year, raw in cache.items():
+        table = oms_table(raw)
+        write_json(raw_path("oms", year), raw)
+        write_csv(table, "oms", year)
+    return saved, failed
 
 
 def rr_session():
@@ -189,101 +224,62 @@ def rr_session():
     return session
 
 
-def rr_datasets(session, filters, folder):
-    (folder/"source.json").unlink(missing_ok=True)
-    records, datasets, expected, page = [], [], None, 0
-    while True:
-        query = dict(page=page, filter=filters, page_size=100, sortings=[])
-        response = session.post(RR+"/datasets_filtered_ordered", json=query, timeout=30, allow_redirects=False)
-        payload, record = save_response(response, folder/f"datasets_{page+1:04d}.json")
-        record.update(kind="datasets", request=query); records.append(record)
-        rows, count = payload["datasets"], int(payload["count"])
-        if not isinstance(rows, list) or count < 0 or (expected is not None and count != expected):
-            raise ValueError("Invalid RR dataset catalogue")
-        expected = count; datasets.extend(rows)
-        identifiers = {(row.get("run_number"), row["name"]) for row in datasets}
-        if len(identifiers) != len(datasets) or len(datasets) > expected:
-            raise ValueError("Duplicate RR datasets")
-        if len(datasets) == expected:
-            break
-        if not rows:
-            raise ValueError("Incomplete RR pagination")
-        page += 1
-    return datasets, records
+def rr_verdict(counts):
+    """Bad takes precedence; incomplete or absent verdicts stay unknown."""
+    numbers = {key: value for key, value in counts.items() if isinstance(value, (int, float))}
+    if any(value < 0 for value in numbers.values()):
+        return "unknown"
+    if numbers.get("BAD", 0) > 0:
+        return "bad"
+    if numbers.get("GOOD", 0) > 0 and all(value == 0 for key, value in numbers.items() if key != "GOOD"):
+        return "good"
+    return "unknown"
 
 
-def rr_collect_run(run, session):
-    folder = DATA/"rr/raw"/str(run)
-    datasets, records = rr_datasets(session, {"run_number": run}, folder)
-    names = [row["name"] for row in datasets if row["name"].startswith("/PromptReco/")]
-    for index, name in enumerate(names):
-        query = dict(run_number=run, dataset_name=name)
-        response = session.post(RR+"/lumisections/rr_lumisection_ranges_by_component", json=query,
-                                timeout=30, allow_redirects=False)
-        _, record = save_response(response, folder/f"components_{index+1:04d}.json")
-        record.update(kind="components", rr_dataset=name, request=query); records.append(record)
-    write_source(folder, records, run_number=run, component="muon-muon", selection="PromptReco only")
-    return rr_summary(run)
+def rr_summary(year):
+    payload = json.loads(raw_path("rr", year).read_text())
+    rows = []
+    for page in payload["pages"]:
+        for dataset in page["datasets"]:
+            triplets = (dataset.get("DatasetTripletCache") or {}).get("triplet_summary") or {}
+            rows.append({"run_number": dataset["run_number"], **{
+                name: "unknown" if dataset.get("deleted") else rr_verdict(triplets.get(component) or {})
+                for name, component in RR_COMPONENTS.items()}})
+    frame = pd.DataFrame(rows, columns=["run_number", *RR_COMPONENTS])
+    if frame.run_number.duplicated().any():
+        raise ValueError("Duplicate RR run verdicts")
+    return write_csv(frame.sort_values("run_number"), "rr", year)
 
 
 def rr_collect_year(year, session):
-    folder = DATA/"rr/raw"/f"year_{year}"
+    pages, runs, expected, page = [], set(), None, 0
     name = f"/PromptReco/Collisions{year}/DQM"
-    _, records = rr_datasets(session, {"name": name}, folder)
-    write_source(folder, records, rr_dataset=name, component="muon-muon")
-    return rr_year_summary(year)
+    while True:
+        query = dict(page=page, filter={"name": name}, page_size=100, sortings=[])
+        payload = json_response(session.post(RR+"/datasets_filtered_ordered", json=query,
+                                             timeout=30, allow_redirects=False))
+        rows, count = payload["datasets"], int(payload["count"])
+        if not isinstance(rows, list) or count < 0 or (expected is not None and count != expected):
+            raise ValueError("Invalid RR dataset catalogue")
+        expected = count
+        for row in rows:
+            if row["name"] != name or row["run_number"] in runs:
+                raise ValueError("Duplicate or unexpected RR dataset")
+            runs.add(row["run_number"])
+        pages.append(payload)
+        if len(runs) == expected:
+            break
+        if len(runs) > expected or not rows:
+            raise ValueError("Incomplete RR pagination")
+        page += 1
+    write_json(raw_path("rr", year), {"pages": pages})
+    return rr_summary(year)
 
 
-def rr_year_summary(year):
-    """One year of official Muon run labels, including unknown verdicts."""
-    _, saved = read_raw(DATA/"rr/raw"/f"year_{year}")
-    rows = []
-    for payload in saved.values():
-        for dataset in payload["datasets"]:
-            triplets = (dataset.get("DatasetTripletCache") or {}).get("triplet_summary") or {}
-            counts = triplets.get("muon-muon") or {}
-            good, bad = int(counts.get("GOOD", 0)), int(counts.get("BAD", 0))
-            other = sum(value for key, value in counts.items()
-                        if key not in ("GOOD", "BAD") and isinstance(value, (int, float)))
-            label = "bad" if bad > 0 else "good" if good > 0 and other == 0 else "unknown"
-            if dataset.get("deleted"):
-                label = "unknown"
-            rows.append(dict(run_number=dataset["run_number"], rr_dataset=dataset["name"],
-                             label=label, good_ls=good, bad_ls=bad, other_ls=int(other)))
-    columns = ["run_number", "rr_dataset", "label", "good_ls", "bad_ls", "other_ls"]
-    frame = pd.DataFrame(rows, columns=columns)
-    if frame.run_number.duplicated().any():
-        raise ValueError("Duplicate RR run verdicts")
-    existing = DATA/"rr/summary/runs.csv"
-    if existing.exists():
-        previous = pd.read_csv(existing)
-        previous = previous[previous.rr_dataset.ne(f"/PromptReco/Collisions{year}/DQM")]
-        frame = pd.concat([previous[columns], frame], ignore_index=True)
-    return write_csv(frame.sort_values("run_number"), "rr", "runs")
-
-
-def rr_summary(run):
-    source, saved = read_raw(DATA/"rr/raw"/str(run))
-    rows = []
-    for record in source["requests"]:
-        dataset = record.get("rr_dataset", "")
-        if record.get("kind") != "components" or not dataset.startswith("/PromptReco/"):
-            continue
-        for interval in saved[record["file"]].get("muon-muon", []):
-            start, end = interval["start"], interval["end"]
-            if type(start) is not int or type(end) is not int or not 0 < start <= end:
-                raise ValueError("Invalid RR Muon interval")
-            status = interval.get("status")
-            rows.append(dict(run_number=run, rr_dataset=dataset, start=start, end=end, status=status,
-                             label={"GOOD": "good", "BAD": "bad"}.get(status, "unknown"),
-                             comment=interval.get("comment"), cause=interval.get("cause")))
-    return write_csv(pd.DataFrame(rows, columns=RR_FIELDS), "rr", run)
-
-
-def selected_runs(source, offline, years=None):
-    if offline:
-        return sorted(int(path.name) for path in (DATA/source/"raw").glob("*")
-                      if path.is_dir() and path.name.isdigit())
+def selected_runs(years=None):
+    paths = ([DATA/"rr/summary"/f"{year}.csv" for year in years] if years else
+             sorted((DATA/"rr/summary").glob("[0-9][0-9][0-9][0-9].csv")))
+    runs = {int(run) for path in paths if path.exists() for run in pd.read_csv(path).run_number}
     cached = None
     if MANIFEST.exists():
         frame = pd.read_csv(MANIFEST)
@@ -291,76 +287,51 @@ def selected_runs(source, offline, years=None):
         if years:
             frame = frame[frame.dataset.str.contains("|".join(f"/Run{year}" for year in years))]
         cached = set(frame.run_number.astype(int))
-    labels = DATA/"rr/summary/runs.csv"
-    if labels.exists():
-        frame = pd.read_csv(labels)
-        if years:
-            frame = frame[frame.rr_dataset.str.contains("|".join(f"Collisions{year}/" for year in years))]
-        runs = set(frame.run_number.astype(int))
-        return sorted(runs if cached is None else runs & cached)
-    if cached is not None:
+    if runs:
+        return sorted(runs if not cached else runs & cached)
+    if cached:
         return sorted(cached)
-    raise ValueError("Run RR metadata first or specify --runs; no RR summary or Muon0 catalogue exists")
+    raise ValueError("Run RR metadata first or specify --runs; no Muon0 run list is available")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", choices=("dcs", "oms", "rr"))
     parser.add_argument("--years", type=int, nargs="+")
-    parser.add_argument("--runs", type=int, nargs="+")
-    parser.add_argument("--offline", action="store_true", help="Rebuild CSV summaries from saved raw JSON")
+    parser.add_argument("--runs", type=int, nargs="+", help="OMS run selection")
+    parser.add_argument("--offline", action="store_true", help="Rebuild yearly CSV files from saved JSON")
     args = parser.parse_args()
+    if args.runs and (args.source != "oms" or args.offline):
+        parser.error("--runs is for online OMS collection; use --years for annual files")
     if args.runs and any(run <= 0 for run in args.runs):
         parser.error("Run numbers must be positive")
     if not args.offline:
         setup_tls()
     if args.source == "dcs":
-        years = args.years or [2023, 2024, 2025, 2026]
-        dcs_collect(years, offline=args.offline)
-        print(f"DCS: {len(years)} yearly CSV summaries saved")
-        return
-    if args.source == "rr" and not args.runs:
+        dcs_collect(args.years or [2023, 2024, 2025, 2026], offline=args.offline)
+    elif args.source == "rr":
         session = None if args.offline else rr_session()
         for year in args.years or [2025]:
-            (rr_year_summary(year) if args.offline else rr_collect_year(year, session))
-        print("RR: yearly Muon run labels saved → data/rr/summary/runs.csv")
-        return
-    try:
-        runs = list(dict.fromkeys(args.runs or selected_runs(args.source, args.offline, args.years)))
-    except (ValueError, OSError) as error:
-        parser.error(str(error))
-    if not runs:
-        parser.error("No runs found; specify --runs or populate the Muon0 run catalogue")
-    session, auth = None, None
-    if not args.offline and args.source == "oms":
+            rr_summary(year) if args.offline else rr_collect_year(year, session)
+    elif args.offline:
+        years = args.years or annual_years("oms")
+        if not years:
+            parser.error("No annual OMS JSON found")
+        for year in years:
+            oms_summary(year)
+    else:
+        try:
+            runs = list(dict.fromkeys(args.runs or selected_runs(args.years)))
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
         from tsgauth.oidcauth import DeviceAuth
         auth = DeviceAuth("cmsoms-prod-public", target_client_id="cmsoms-prod")
-        session = requests.Session()
-    elif not args.offline:
-        session = rr_session()
-    failures, completed = [], 0
-    for run in runs:
-        try:
-            if args.offline:
-                (oms_summary if args.source == "oms" else rr_summary)(run)
-            elif args.source == "oms":
-                session.headers.update(auth.authparams()["headers"])
-                oms_collect_run(run, session)
-            else:
-                rr_collect_run(run, session)
-            completed += 1
-        except (requests.RequestException, ValueError, OSError, KeyError) as error:
-            failures.append(dict(run_number=int(run), error=str(error)))
-        if (completed + len(failures)) % 25 == 0:
-            print(f"{args.source.upper()}: {completed + len(failures)}/{len(runs)} runs checked", flush=True)
-    folder = DATA/args.source/"summary"; folder.mkdir(parents=True, exist_ok=True)
-    if failures:
-        (folder/"failures.json").write_text(json.dumps(failures, indent=2) + "\n")
-    else:
-        (folder/"failures.json").unlink(missing_ok=True)
-    print(f"{args.source.upper()}: {completed} runs saved, {len(failures)} skipped → {folder}")
-    if not completed:
-        raise SystemExit(1)
+        saved, failed = oms_collect_runs(runs, requests.Session(), args.years, auth)
+        print(f"OMS: {saved} runs saved, {failed} skipped")
+        if not saved:
+            raise SystemExit(1)
+        return
+    print(f"{args.source.upper()}: yearly CSV summaries saved")
 
 
 if __name__ == "__main__":

@@ -18,8 +18,6 @@ __pycache__/
 /data/*/summary/*
 !/data/*/raw/.gitkeep
 !/data/*/summary/.gitkeep
-!/data/dcs/raw/2025_reference.json
-!/data/dcs/raw/2025_reference.source.json
 /output/*
 !/output/dataset/
 !/output/model/
