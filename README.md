@@ -27,14 +27,6 @@ bash runs/data/oms.sh --runs 393240 396153 397332  # CERN device login
 
 # Inspect cached histograms
 bash runs/plotting/mes.sh
-
-# Train one experiment into a new directory, then predict and plot
-bash runs/train.sh model_03_ae_dm_k1 --years 2025 --output output/model/dm_rr
-bash runs/predict.sh output/model/dm_rr data/dials output/predict/dm_rr --years 2025
-bash runs/plotting/scores.sh --input output/predict/dm_rr
-
-# Redraw an existing result without training or prediction
-bash runs/plotting/scores.sh --input output/predict/03_ae_dm_k1
 ```
 
 For the 2024–2026 study, train on 2024–2025. The combined Test contains held-out
@@ -45,9 +37,9 @@ checkpoint and fixed threshold:
 ```bash
 bash runs/train.sh model_03_ae_dm_k1 --years 2024 2025 --output output/model/2024_2025/03_ae_dm_k1
 bash runs/predict.sh output/model/2024_2025/03_ae_dm_k1 data/dials output/predict/2024_2025/03_ae_dm_k1 --years 2024 2025 --prompt-reco
-# After 2026 collection finishes:
 bash runs/predict.sh output/model/2024_2025/03_ae_dm_k1 data/dials output/predict/2026/03_ae_dm_k1 --years 2026 --prompt-reco
-bash runs/plotting/scores.sh --input output/predict/2024_2025/03_ae_dm_k1 output/predict/2026/03_ae_dm_k1 --output output/plots/2024_2025_2026/03_ae_dm_k1
+# Redraw the combined Test independently of training and prediction
+bash runs/plotting/scores.sh --input output/predict/2024_2025/03_ae_dm_k1 output/predict/2026/03_ae_dm_k1 --output output/plots/03_ae_dm_k1
 ```
 
 The Good split remains 70/15/15% by run, stratified by era with seed 42. No 2026
@@ -57,7 +49,10 @@ The cached 2024 C–E reprocessings are retained but excluded from this study.
 With the current RR snapshot, 2026 has no Muon Bad labels: it tests stability on
 Good runs and allows inspection of Unknown runs, not Bad detection efficiency.
 Multiple plot inputs must share the checkpoint, threshold and training signature;
-only Test rows are included, and a separate `--output` directory is required.
+only Test rows are included, and an explicit `--output` directory is required.
+`output/plots/` contains only `mes/` and the four numbered model folders. Each
+model folder holds the combined 2024–2026 Test views, distributions and confusion
+matrix, plus the 2024–2025 training loss curve. No year subfolders are used.
 Each model also gets `confusion_matrix.png`: DCS-selected, finite-score Good/Bad
 Test LS, with counts and row percentages at the fixed threshold. LS inherit their
 RR run labels; Unknown/unscored LS are excluded. This is not LS-level ground truth.
@@ -70,7 +65,8 @@ Stage 04 uses Stage 03 weights and calibrates the window score; it does not trai
 
 ```bash
 bash runs/train.sh model_04_ae_dm_k1_weighted_window \
-  --years 2025 --source output/model/dm_rr --output output/model/dm_window_rr
+  --years 2024 2025 --source output/model/2024_2025/03_ae_dm_k1 \
+  --output output/model/2024_2025/04_ae_dm_k1_weighted_window
 ```
 
 Metadata recipes use `.venv-metadata`; DIALS collection uses `.venv-dials` and the `dials` dependency group. Model and plotting recipes use the project environment. Credentials stay outside the repository. Commands run from the repository root through `python -m scripts.…`.
@@ -102,9 +98,13 @@ data/
   dials/<dataset>/<run>/         cached ME Parquet files
   {dcs,oms,rr}/<year>.json       metadata
 output/
-  model/<experiment>/           checkpoints and fitted threshold
-  predict/<experiment>/         scores.parquet and metrics.json
-  plots/{mes,<experiment>}/     figures
+  model/2024_2025/<experiment>/      checkpoints and fitted threshold
+  predict/{2024_2025,2026}/<experiment>/  scores.parquet and metrics.json
+  plots/mes/                        normalized ME figures
+  plots/01_ae_2feat/                 combined 2024–2026 Test figures
+  plots/02_ae_hist/
+  plots/03_ae_dm_k1/
+  plots/04_ae_dm_k1_weighted_window/
 ```
 
 Dataset folder names encode `/` as `__`. Available runs are discovered from the cache; no inventory is required. Generated data and results are ignored by Git.
