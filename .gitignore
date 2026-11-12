@@ -7,6 +7,11 @@ __pycache__/
 
 /data/*
 !/data/run_labels.csv
+!/data/metadata/
+/data/metadata/*
+!/data/metadata/dcs_2025.json
+!/data/metadata/dcs_2025_source.json
+!/data/metadata/known_bad_reference.csv
 /output/*
 !/output/dataset/
 !/output/model/

@@ -1,0 +1,161 @@
+"""Shared residuals, fixed Good calibration, LS context and retention audits."""
+
+import numpy as np
+import pandas as pd
+import torch
+
+from config import BASE, IDS, REGIONS, SPECIAL_RUNS, WINDOW_SIZE
+from models import BATCH_SIZE, residuals
+
+
+QUANTILE = .975
+
+
+def mean_score(terms):
+    terms = np.asarray(terms, dtype=float)
+    if terms.ndim != 2 or np.isinf(terms).any():
+        raise ValueError('Expected an LS-by-ME array of finite or missing residuals')
+    valid = np.isfinite(terms)
+    return np.divide(np.where(valid, terms, 0).sum(1), valid.sum(1),
+                     out=np.full(len(terms), np.nan), where=valid.any(1))
+
+
+def base_terms(features, saved):
+    """Preserve historical feature scaling, empty shapes, and equal ME weights."""
+    features = np.asarray(features, dtype=np.float32)
+    if features.ndim != 2 or not features.shape[1] or features.shape[1] % 2:
+        raise ValueError('Expected an LS-by-feature matrix of mean/std pairs')
+    x = saved['scaler'].transform(features)
+    errors = (x - saved['model'].predict(x)) ** 2
+    return errors.reshape(len(errors), features.shape[1] // 2, 2).mean(2), errors.mean(1)
+
+
+def histogram_terms(model, inputs, histograms, batch_size=BATCH_SIZE):
+    """Compute MSE and optional variance-weighted residuals in one decoder pass."""
+    model.eval()
+    collected = {}
+    with torch.no_grad():
+        for first in range(0, len(inputs), batch_size):
+            stop = first + batch_size
+            result = residuals([h[first:stop] for h in histograms], model(inputs[first:stop]))
+            for kind, values in result.items():
+                collected.setdefault(kind, []).append(values.numpy())
+    return {key: np.concatenate(value) for key, value in collected.items()}
+
+
+def calibrate(frame, terms, calibration, values=None):
+    """Set one fixed cut on separate Good calibration LS, retaining all rows."""
+    terms = np.asarray(terms)
+    if terms.ndim != 2 or len(terms) != len(frame):
+        raise ValueError('Expected one row of ME residuals per LS')
+    values = mean_score(terms) if values is None else np.asarray(values, dtype=float)
+    calibration = np.asarray(calibration)
+    if calibration.shape != (len(frame),) or calibration.dtype != bool or values.shape != (len(frame),):
+        raise ValueError('Expected one calibration flag and score per LS')
+    reference = values[calibration & np.isfinite(values)]
+    if not len(reference):
+        raise ValueError('No observed Good calibration scores')
+    cut = float(np.quantile(reference, QUANTILE))
+    if not np.isfinite(cut) or cut <= 0:
+        raise ValueError('Calibration cut must be positive and finite')
+    scores = frame.copy()
+    scores['anomaly_score'] = values
+    for target in range(terms.shape[1]):
+        scores[f'term_{target}'] = terms[:, target]
+    scores['flagged'] = pd.array(np.where(frame.dcs_pass & np.isfinite(values), values > cut, None), dtype='boolean')
+    return scores, cut
+
+
+def require_alignment(frames, frame):
+    """Reject changed LS coverage, splits, labels, selection or cached counts."""
+    expected = frame.set_index(IDS)
+    if not expected.index.is_unique:
+        raise ValueError('Duplicate cached LS identifiers')
+    columns = ['label', 'split', 'dcs_pass'] + [name for name in frame
+                                             if name.startswith('N_') and name[2:].isdigit()]
+    for name, values in frames.items():
+        actual = values.set_index(IDS)
+        if (not actual.index.is_unique or len(actual) != len(expected)
+                or len(expected.index.difference(actual.index))):
+            raise ValueError(f'{name}: LS identifiers differ from the reference')
+        if (not set(columns).issubset(actual.columns)
+                or not np.array_equal(actual.reindex(expected.index)[columns].to_numpy(),
+                                      expected[columns].to_numpy())):
+            raise ValueError(f'{name}: split, labels, selection or counts changed')
+
+
+def retention(frames, cuts, baseline=BASE):
+    """Audit all Known Bad LS against one frozen baseline or an explicit union.
+
+    Decisions use score > saved cut before DCS gating. Both all-recorded and
+    DCS-pass scopes are reported; newly unscored protected LS count as lost.
+    No threshold or model is fitted to these labels.
+    """
+    baselines = (baseline,) if isinstance(baseline, str) else tuple(baseline)
+    if (not baselines or not set(baselines).issubset(frames) or set(frames) != set(cuts)
+            or any(not np.isfinite(cut) or cut <= 0 for cut in cuts.values())):
+        raise ValueError('Provide frozen baseline names and a positive cut for every frame')
+    reference = frames[baselines[0]]
+    require_alignment(frames, reference)
+    indexed = {name: values.set_index(IDS) for name, values in frames.items()}
+    known = indexed[baselines[0]]
+    table = known.loc[known.split.eq('test') & known.label.eq('bad_well_known'), ['dcs_pass']].copy()
+    for name, values in indexed.items():
+        scores = values.reindex(table.index).anomaly_score.to_numpy(dtype=float, na_value=np.nan)
+        table[f'{name}__score_over_cut'] = scores / cuts[name]
+        table[f'{name}__scored'] = np.isfinite(scores)
+        table[f'{name}__flag'] = np.isfinite(scores) & (scores > cuts[name])
+    protected = table[[f'{name}__flag' for name in baselines]].any(axis=1)
+    table['previously_detected'] = protected
+    rows = []
+    for scope, selected in [('all_recorded', np.ones(len(table), dtype=bool)),
+                            ('dcs_pass', table.dcs_pass.to_numpy(dtype=bool))]:
+        for name in frames:
+            scored, flagged = table[f'{name}__scored'], table[f'{name}__flag']
+            rows.append(dict(stage=name, scope=scope, recorded_ls=int(selected.sum()),
+                             scored_ls=int((selected & scored).sum()), flagged_ls=int((selected & flagged).sum()),
+                             protected_ls=int((selected & protected).sum()),
+                             retained_ls=int((selected & protected & flagged).sum()),
+                             newly_lost_ls=int((selected & protected & ~flagged).sum()),
+                             recovered_ls=int((selected & ~protected & flagged).sum()),
+                             unscored_ls=int((selected & ~scored).sum())))
+    return pd.DataFrame(rows), table.reset_index()
+
+
+def window_mean(scores):
+    """Offline centered five-LS mean; reset at dataset/run/gap/DCS boundaries.
+
+    Uses up to two future LS. A missing current score stays unscored even
+    when observed neighbours contribute context. Labels never define windows.
+    """
+    if scores.duplicated(IDS).any():
+        raise ValueError('Duplicate cached LS identifiers')
+    scores = scores.reset_index(drop=True)
+    result = np.full(len(scores), np.nan)
+    for _, group in scores.groupby(['dataset', 'run_number'], sort=False):
+        group = group.sort_values('ls_number')
+        breaks = group.ls_number.diff().ne(1) | group.dcs_pass.ne(group.dcs_pass.shift())
+        for _, segment in group.groupby(breaks.cumsum(), sort=False):
+            values = segment.anomaly_score.rolling(WINDOW_SIZE, center=True, min_periods=1).mean()
+            result[segment.index] = values.where(segment.anomaly_score.notna())
+    return result
+
+
+def summarize(scores):
+    """Descriptive LS fractions under run labels, never LS truth or run metrics."""
+    test = scores.split.eq('test')
+    standard = test & scores.label.eq('good') & ~scores.run_number.isin(SPECIAL_RUNS)
+    groups = {'test_good_standard': standard,
+              'test_bad_well_known': test & scores.label.eq('bad_well_known'),
+              'test_bad_ambiguous': test & scores.label.eq('bad_ambiguous')}
+    groups.update({name: test & scores.run_number.isin(runs) for name, runs in REGIONS.items()})
+    for name, low, high in [('N1_10', 0, 10), ('N11_100', 10, 100), ('Ngt100', 100, np.inf)]:
+        groups[name] = standard & scores.minimum_positive_N.gt(low) & scores.minimum_positive_N.le(high)
+    rows = []
+    for name, group in groups.items():
+        included = group & scores.dcs_pass
+        valid = included & scores.anomaly_score.notna()
+        flagged = int(scores.loc[valid, 'flagged'].sum())
+        rows.append({'cohort': name, 'included_ls': int(included.sum()), 'scored_ls': int(valid.sum()),
+                     'flagged_ls': flagged, 'flagged_fraction': flagged / valid.sum() if valid.any() else None})
+    return rows

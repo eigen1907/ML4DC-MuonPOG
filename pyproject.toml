@@ -11,6 +11,8 @@ dependencies = [
     "matplotlib",
     "mplhep",
     "scikit-learn>=1.9.1",
+    "torch>=2.15.0",
+    "scipy>=1.18.1",
 ]
 
 [tool.uv]
