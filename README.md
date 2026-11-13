@@ -13,8 +13,9 @@ as a condition, not a reconstruction target. Prescale is not a model input.
 | `03_ae_gmm` | Fit each LS/ME histogram with Gaussians, then reconstruct the fitted shape parameters with a pile-up-conditioned AE |
 | `04_mdn` | Pile-up-conditioned Gaussian-mixture histogram density model |
 | `05_ae_gmm_shared` | Fixed Gaussian shapes learned from Good training LS; LS-specific weights reconstructed with a pile-up-conditioned AE |
+| `06_ae_gmm_shared32` | Same shared model with 32 Gaussians per ME (256 weight features) |
 
-GMM fits with 2, 4 and 8 components are compared. The retained settings and
+Independent per-LS GMM fits with 2, 4 and 8 components are compared. The retained settings and
 network definitions live in `scripts/models/model_0*.py`. Gaussian components
 describe histogram shapes; they are not labels for individual physics processes.
 GMM uses bin-centre EM; low-stat component parameters can be unstable. MDN
@@ -35,6 +36,10 @@ The primary score compares original bin fractions with reconstructed shapes,
 using training bin variance plus count-dependent sampling variance. Training
 variance includes counting noise; this conservative diagnostic is not a p-value.
 Its score also differs from model 03, so results do not isolate representation alone.
+Model 06 changes only K=8 to K=32; the prior TOTAL remains 8, hidden layers
+64/8, and fitting/optimization budgets unchanged. Some MEs have only 30 bins,
+so 32 overlapping weights are not independently identifiable. This is a first
+fixed-budget comparison, not an optimally tuned K32 model.
 
 ## Current result
 
@@ -47,9 +52,10 @@ Fixed-threshold Test comparison, 2024–2026 (2026-11-13 snapshot):
 | `03_ae_gmm` | 30.30% | 5.22% | 100.00% |
 | `04_mdn` | 26.84% | 0.36% | 51.28% |
 | `05_ae_gmm_shared` | 31.96% | 7.24% | 99.15% |
+| `06_ae_gmm_shared32` | 30.96% | 5.82% | 99.84% |
 
 These are LS in RR-labelled runs: 181,011 Good LS (132,368 without 2026C)
-and 2,580 Bad LS. All five models score the same Test cohort. Baseline remains the
+and 2,580 Bad LS. All six models score the same Test cohort. Baseline remains the
 reference: PU/GMM did not improve this trade-off, while MDN reduces Good flags
 but misses many Bad-run LS. PU alone does not resolve 2026C.
 A matched no-PU version of model 02 gave 5.19% Good flagged without 2026C and
@@ -62,20 +68,24 @@ Good-calibration protocol, gives 30.14% Good flagged overall, 4.69% without
 2026C, and 100% Bad flagged. This is a diagnostic; it did not replace the primary
 score after looking at Test. Shared weights modestly improve on model 03's
 5.22%/100% trade-off, while the original-bin score still needs work.
+Model 06's auxiliary weight score gives 4.72%/99.96% without 2026C, essentially
+unchanged from K8. Its primary original-bin score improves, but extreme
+low-statistics robustness worsens in the thinning check below.
 
 Marginal thinning of 128 high-stat Good monitoring LS (three draws each):
 
-| Counts retained | Model 03 flagged | Model 05 primary flagged |
-|---|---:|---:|
-| 100% | 0% | 0% |
-| 10% | 7.55% | 32.29% |
-| 1% | 100% | 72.14% |
+| Counts retained | Model 03 flagged | Model 05 primary flagged | Model 06 primary flagged |
+|---|---:|---:|---:|
+| 100% | 0% | 0% | 0.78% |
+| 10% | 7.55% | 32.29% | 20.57% |
+| 1% | 100% | 72.14% | 98.18% |
 
 At 1%, median predicted-shape change (total variation) falls from 0.071 to
 0.022, with 99.48% of MEs still observed. Fitting is more stable, but anomaly
 robustness is not uniformly improved. Cached 1D histograms cannot reproduce
 event-level inter-ME correlations. Model 05's `basis.png` shows the fixed
 components and pooled Good-training shape; `metrics.json` contains the study.
+Model 06's `basis.png` overlays the K8 and K32 pooled fits.
 
 ## Workflow
 
