@@ -12,7 +12,7 @@ import torch
 from scripts.models.config import EXPERIMENTS, OUT
 from scripts.data.dials import load_dataset
 from scripts.models.core import (QUANTILE, feature_terms, load_checkpoint,
-                                 mean_score, restore_model, threshold_for)
+                                 mean_score, restore_model, score_values, threshold_for)
 from scripts.models.networks import histogram_scores
 from scripts.models.preprocessing import condition_values, load_pileup, model_features, prepare
 
@@ -32,7 +32,7 @@ def predict_terms(spec, saved, dataset):
     if 'pileup' not in dataset:
         dataset['pileup'] = load_pileup(dataset['frame'])
     settings = saved['settings']
-    if spec.KIND in ('shared_gmm', 'kde') and settings['score'] != 'variance_residual':
+    if spec.KIND in ('shared_gmm', 'kde') and settings['score'] not in ('variance_residual', 'mmd'):
         raise ValueError('Unknown density-reconstruction score in checkpoint')
     conditions, _, available = condition_values(
         dataset['pileup'], scaler=saved['condition_scaler'],
@@ -62,10 +62,20 @@ def predict_terms(spec, saved, dataset):
     rows = np.flatnonzero(available)
     batch_size = int(settings.get('batch_size', 1024))
     model.eval()
+    kernels = None
+    if settings.get('score') == 'mmd':
+        from scripts.models.kde_scores import mmd_kernels
+
+        kernels = mmd_kernels(saved['axes'], [h.shape[1] for h in dataset['histograms']],
+                              bandwidth_bins=settings.get('mmd_bandwidth_bins', (1., 4., 16.)))
     with torch.no_grad():
         for first in range(0, len(rows), batch_size):
             selected = rows[first:first + batch_size]
-            prediction = model(inputs[selected], conditions[selected])
+            if settings.get('mask_me'):
+                observed = torch.as_tensor(np.asarray(dataset['totals'])[selected] > 0)
+                prediction = model.predict_heldout(inputs[selected], conditions[selected], observed)
+            else:
+                prediction = model(inputs[selected], conditions[selected])
             if spec.KIND == 'mdn':
                 result = histogram_scores(prediction, [h[selected] for h in dataset['histograms']])
                 terms[selected] = result[settings.get('score', 'deviance')].numpy()
@@ -79,9 +89,16 @@ def predict_terms(spec, saved, dataset):
                     from scripts.models.kde import decode
 
                     probabilities = decode(weights, saved['basis'])
-                terms[selected] = histogram_terms(
-                    [h[selected] for h in dataset['histograms']], probabilities,
-                    saved['bin_variance'], saved['probability_floor'])
+                if kernels is not None:
+                    from scripts.models.kde_scores import mmd_terms
+
+                    terms[selected] = mmd_terms(
+                        [h[selected] for h in dataset['histograms']], probabilities, kernels,
+                        count_corrected=settings.get('mmd_count_corrected', True))
+                else:
+                    terms[selected] = histogram_terms(
+                        [h[selected] for h in dataset['histograms']], probabilities,
+                        saved['bin_variance'], saved['probability_floor'])
             else:
                 errors = (prediction.numpy() - inputs[selected].numpy()) ** 2
                 for me in range(n_mes):
@@ -91,7 +108,7 @@ def predict_terms(spec, saved, dataset):
                     terms[selected, me] = np.divide(
                         np.where(observed, errors[:, columns], 0).sum(1), counts,
                         out=np.full(len(selected), np.nan), where=counts > 0)
-    return terms, None
+    return terms, score_values(terms, saved) if saved.get('score_calibration') is not None else None
 
 
 def predict(checkpoint, data, output=None, *, years=None, prompt_reco=False):
@@ -120,6 +137,8 @@ def predict(checkpoint, data, output=None, *, years=None, prompt_reco=False):
                    description=EXPERIMENTS[spec.NAME], signature=saved.get('signature'),
                    years=sorted(scores.dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist()),
                    prompt_reco=prompt_reco)
+    if saved.get('score_variant'):
+        metrics['score_variant'] = saved['score_variant']
     if spec.KIND != 'feature':
         metrics.update(settings=saved['settings'], oms_available_ls=int(scores.oms_available.sum()))
     (output/'metrics.json').write_text(json.dumps(metrics, indent=2)+'\n')

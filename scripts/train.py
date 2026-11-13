@@ -110,7 +110,9 @@ def fit_conditioned(dataset, context, spec, settings=None):
             from scripts.models.kde import train_reference
 
             saved['basis'] = train_reference(dataset['histograms'], dataset['axes'], basis_train,
-                                            bandwidth_bins=settings['bandwidth_bins'])
+                                            bandwidth_bins=settings['bandwidth_bins'],
+                                            **{key: value for key, value in settings.items()
+                                               if key.startswith('adaptive')})
         saved['bin_variance'] = training_variance(dataset['histograms'], basis_train)
         saved['probability_floor'] = [
             .5 / (dataset['totals'][basis_train, me].sum(dtype=np.float64) + .5 * h.shape[1])
@@ -128,6 +130,9 @@ def fit_conditioned(dataset, context, spec, settings=None):
             raise ValueError('Expected aligned feature values and validity flags')
         available &= mask.any(1)
         dimensions = features.shape[1]
+        if settings.get('mask_me'):
+            dimensions = tuple(h.shape[1] for h in dataset['histograms'])
+            saved['bin_sizes'] = dimensions
         saved.update(feature_me=np.asarray(feature_me, dtype=int), features=list(names))
     train, monitor = train[available[train]], monitor[available[monitor]]
     if not len(train) or not len(monitor):
@@ -165,6 +170,8 @@ def fit_conditioned(dataset, context, spec, settings=None):
         masks = torch.from_numpy(mask)
         feature_me = torch.as_tensor(saved['feature_me'], dtype=torch.long)
         saved['scaler'] = scaler
+        if settings.get('mask_me'):
+            observed_mes = torch.from_numpy(np.asarray(dataset['totals']) > 0)
     inputs = torch.as_tensor(inputs, dtype=torch.float32)
     saved['input_dim'] = inputs.shape[1]
     torch.manual_seed(SEED)
@@ -180,6 +187,19 @@ def fit_conditioned(dataset, context, spec, settings=None):
     batch_size = int(settings.get('batch_size', 1024))
 
     def objective(rows):
+        if settings.get('mask_me'):
+            observed = observed_mes[rows].to(device)
+            if model.training:
+                target = model.sample_target(observed)
+                predicted = model(inputs[rows].to(device), conditions[rows].to(device),
+                                  observed=observed, target_me=target)
+                target_mask = masks[rows] & (feature_me[None, :] == target[:, None])
+            else:
+                predicted = model.predict_heldout(inputs[rows].to(device),
+                                                  conditions[rows].to(device), observed)
+                target_mask = masks[rows]
+            return _feature_loss(predicted, targets[rows], target_mask, feature_me,
+                                 len(dataset['me_names']))
         predicted = model(inputs[rows].to(device), conditions[rows].to(device))
         if is_histogram:
             return histogram_loss(predicted, [h[rows] for h in histograms],

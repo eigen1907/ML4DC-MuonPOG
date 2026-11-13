@@ -1,4 +1,4 @@
-"""Binned Gaussian KDE shapes; fixed native-bin bandwidth and training reference.
+"""Binned Gaussian KDE shapes with fixed or training-adaptive bandwidths.
 
 Counts weight kernels at bin centres because the cache has no unbinned values.
 This is a KDE representation for the LS autoencoder, not a standalone joint
@@ -10,18 +10,99 @@ import numpy as np
 from scripts.models.gaussian import _axis, gaussian_bin_probabilities
 
 
-def train_reference(histograms, axes, train_mask, bandwidth_bins=1.):
+def _adaptive_reference(histogram, train_rows, item, multipliers, bounds,
+                        sample_limit, prior_strength, seed):
+    """Training-only count-split selection of bounded Abramson bandwidths."""
+    bins = histogram.shape[1]
+    centers, edges = item['centers'], item['edges']
+    widths = np.diff(edges)
+    native_width = float(np.median(widths[widths > 0]))
+
+    def kernels(raw, multiplier):
+        pilot = item['probabilities'] @ raw
+        density = np.maximum(pilot / np.maximum(widths, native_width * 1e-12),
+                             np.finfo(float).tiny)
+        log_geometric = float(raw @ np.log(density))
+        factors = np.exp(np.clip(np.log(multiplier) + .5 * (log_geometric - np.log(density)),
+                                 np.log(bounds[0]), np.log(bounds[1])))
+        bandwidths = np.minimum(.5, item['bandwidth'] * factors)
+        probability = gaussian_bin_probabilities(
+            np.ones((bins, 1)), centers[:, None], bandwidths[:, None], edges,
+            periodic=item['periodic']).T
+        return probability, bandwidths
+
+    # Selected rows are withheld entirely from the pilot/prior used for CV.
+    # The final kernel uses every Good training LS only after selection.
+    rng = np.random.default_rng(seed)
+    wanted = min(sample_limit, item['training_ls'] // 2)
+    candidates = rng.choice(train_rows, min(len(train_rows), 4 * wanted), replace=False)
+    counts = histogram[candidates].astype(np.float64)
+    if not np.equal(counts, np.floor(counts)).all():
+        raise ValueError('Adaptive bandwidth count splitting requires integer counts')
+    eligible = counts.sum(1) >= 2
+    candidates, counts = candidates[eligible][:wanted], counts[eligible][:wanted]
+    first = rng.binomial(counts.astype(np.int64), .5)
+    second = counts - first
+    valid = (first.sum(1) > 0) & (second.sum(1) > 0)
+    candidates, counts, first, second = (x[valid] for x in (candidates, counts, first, second))
+    scores, multiplier = [], 1.
+    if len(candidates):
+        held = (counts / counts.sum(1, keepdims=True)).sum(0)
+        background = np.maximum(item['raw_reference'] * item['training_ls'] - held, 0)
+        background /= background.sum()
+        observed = second / second.sum(1, keepdims=True)
+        mixture = ((first + prior_strength * background)
+                   / (first.sum(1, keepdims=True) + prior_strength))
+        for candidate in multipliers:
+            probability, _ = kernels(background, candidate)
+            predicted = mixture @ probability.T
+            ce = float(-(observed * np.log(np.maximum(predicted, 1e-12))).sum(1).mean())
+            scores.append(dict(multiplier=float(candidate), cross_entropy=ce))
+        multiplier = min(scores, key=lambda row: row['cross_entropy'])['multiplier']
+    probability, bandwidths = kernels(item['raw_reference'], multiplier)
+    reference = probability @ item['raw_reference']
+    reference /= reference.sum()
+    return dict(probabilities=probability, reference=reference,
+                adaptive=dict(method='train-count-split Abramson', multiplier=multiplier,
+                              bounds=tuple(bounds), bandwidths=bandwidths,
+                              bandwidth_bins_min=float(bandwidths.min() / native_width),
+                              bandwidth_bins_median=float(np.median(bandwidths) / native_width),
+                              bandwidth_bins_max=float(bandwidths.max() / native_width),
+                              cv_rows=candidates.tolist(), cv_ls=int(len(candidates)),
+                              pilot_ls=item['training_ls'] - len(candidates),
+                              cv_scores=scores, seed=int(seed)))
+
+
+def train_reference(histograms, axes, train_mask, bandwidth_bins=1., *, adaptive=False,
+                    adaptive_multipliers=(.5, 1., 2.), adaptive_clip=(.5, 2.),
+                    adaptive_cv_ls=256, adaptive_cv_prior=8., adaptive_seed=42):
     """Build fixed kernels and an equal-LS Good-training reference per ME.
 
-    The default width is one native bin; narrower widths would suggest more
-    resolution than the cached histogram provides. Phi uses wrapped kernels.
+    The baseline width is one native bin. Phi uses wrapped kernels.
     raw_reference contains bin fractions before smoothing, so prior shrinkage
     followed by KDE applies the smoothing exactly once.
+
+    adaptive=True allows narrower kernels in dense pilot regions and broader
+    kernels in sparse regions (bounded relative to the fixed bandwidth).
+    Per-ME multipliers minimize held-out-count cross entropy within Good TRAIN.
+    The CV rows are excluded from their selection pilot; final kernels then use
+    all training LS. Half-bin adaptive widths are representation bandwidths,
+    not a claim to recover unbinned information. The default fixed path is kept.
     """
     if not histograms or len(histograms) != len(axes):
         raise ValueError('Expected matching histogram and axis lists')
     if not np.isfinite(bandwidth_bins) or bandwidth_bins < 1:
         raise ValueError('KDE bandwidth must be at least one native bin')
+    if adaptive:
+        multipliers = np.asarray(adaptive_multipliers, dtype=float)
+        bounds = np.asarray(adaptive_clip, dtype=float)
+        if (multipliers.ndim != 1 or not len(multipliers) or not np.isfinite(multipliers).all()
+                or (multipliers <= 0).any() or bounds.shape != (2,)
+                or not np.isfinite(bounds).all() or not 0 < bounds[0] <= bounds[1]
+                or type(adaptive_cv_ls) is not int or adaptive_cv_ls < 1
+                or not np.isfinite(adaptive_cv_prior) or adaptive_cv_prior < 0
+                or type(adaptive_seed) is not int or adaptive_seed < 0):
+            raise ValueError('Expected positive bounded adaptive widths and a valid TRAIN CV selection')
     size = len(histograms[0])
     train = np.asarray(train_mask)
     if train.dtype != bool or train.shape != (size,) or not train.any():
@@ -54,11 +135,15 @@ def train_reference(histograms, axes, train_mask, bandwidth_bins=1.):
         pooled /= observed
         reference = kernels @ pooled
         reference /= reference.sum()
-        references.append(dict(probabilities=kernels, raw_reference=pooled,
-                               reference=reference, centers=centers, edges=edges,
-                               bandwidth=width, bandwidth_bins=float(bandwidth_bins),
-                               periodic=periodic, training_ls=observed,
-                               stem=axis.get('stem', f'me_{len(references)}')))
+        item = dict(probabilities=kernels, raw_reference=pooled,
+                    reference=reference, centers=centers, edges=edges,
+                    bandwidth=width, bandwidth_bins=float(bandwidth_bins),
+                    periodic=periodic, training_ls=observed,
+                    stem=axis.get('stem', f'me_{len(references)}'))
+        if adaptive:
+            item.update(_adaptive_reference(histogram, rows, item, multipliers, bounds,
+                                            adaptive_cv_ls, adaptive_cv_prior, adaptive_seed))
+        references.append(item)
     return references
 
 

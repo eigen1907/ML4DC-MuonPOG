@@ -45,7 +45,7 @@ def load_checkpoint(path):
 def restore_model(spec, saved):
     if spec.KIND == 'feature':
         return saved['model']
-    dimensions = saved['bin_sizes'] if spec.KIND == 'mdn' else saved['input_dim']
+    dimensions = saved['bin_sizes'] if (spec.KIND == 'mdn' or saved['settings'].get('mask_me')) else saved['input_dim']
     model = spec.build_model(dimensions, saved['settings'])
     model.load_state_dict(saved['state_dict'])
     model.eval()
@@ -74,6 +74,16 @@ def mean_score(terms):
     valid = np.isfinite(terms)
     return np.divide(np.where(valid, terms, 0).sum(1), valid.sum(1),
                      out=np.full(len(terms), np.nan), where=valid.any(1))
+
+
+def score_values(terms, saved):
+    """Optional saved, Good-monitor-only rank calibration; default stays unchanged."""
+    reference = saved.get('score_calibration')
+    if reference is None:
+        return mean_score(terms)
+    from scripts.models.kde_scores import aggregate_terms, ecdf_terms
+
+    return aggregate_terms(ecdf_terms(terms, reference), saved['score_aggregation'])
 
 
 def feature_terms(features, saved):
