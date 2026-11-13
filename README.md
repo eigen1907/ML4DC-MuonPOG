@@ -12,6 +12,7 @@ as a condition, not a reconstruction target. Prescale is not a model input.
 | `02_ae_2feat_pileup` | Mean/std AE conditioned on pile-up; reconstructs only ME features |
 | `03_ae_gmm` | Fit each LS/ME histogram with Gaussians, then reconstruct the fitted shape parameters with a pile-up-conditioned AE |
 | `04_mdn` | Pile-up-conditioned Gaussian-mixture histogram density model |
+| `05_ae_gmm_shared` | Fixed Gaussian shapes learned from Good training LS; LS-specific weights reconstructed with a pile-up-conditioned AE |
 
 GMM fits with 2, 4 and 8 components are compared. The retained settings and
 network definitions live in `scripts/models/model_0*.py`. Gaussian components
@@ -28,6 +29,13 @@ The retained MDN uses K=8 and a 64/8 encoder. Candidates were selected on Good
 monitoring runs: four moment-AE settings, six GMM settings plus EM refinement,
 and six MDN settings with the best two refitted on all training LS.
 
+Model 05 is one controlled small study: K=8 shared means/widths, 64 weight
+features, the same 64/8 AE bottleneck as model 03, and total prior strength 8.
+The primary score compares original bin fractions with reconstructed shapes,
+using training bin variance plus count-dependent sampling variance. Training
+variance includes counting noise; this conservative diagnostic is not a p-value.
+Its score also differs from model 03, so results do not isolate representation alone.
+
 ## Current result
 
 Fixed-threshold Test comparison, 2024–2026 (2026-11-13 snapshot):
@@ -38,15 +46,36 @@ Fixed-threshold Test comparison, 2024–2026 (2026-11-13 snapshot):
 | `02_ae_2feat_pileup` | 30.63% | 5.36% | 100.00% |
 | `03_ae_gmm` | 30.30% | 5.22% | 100.00% |
 | `04_mdn` | 26.84% | 0.36% | 51.28% |
+| `05_ae_gmm_shared` | 31.96% | 7.24% | 99.15% |
 
 These are LS in RR-labelled runs: 181,011 Good LS (132,368 without 2026C)
-and 2,580 Bad LS. All four models score the same cohort. Baseline remains the
+and 2,580 Bad LS. All five models score the same Test cohort. Baseline remains the
 reference: PU/GMM did not improve this trade-off, while MDN reduces Good flags
 but misses many Bad-run LS. PU alone does not resolve 2026C.
 A matched no-PU version of model 02 gave 5.19% Good flagged without 2026C and
 100% Bad flagged, so a PU benefit was not demonstrated. Only one representative
 per family is retained; other candidates and retired DM/window results are removed
 from the active project. Existing results were backed up outside the repository.
+
+For model 05, auxiliary **weight-reconstruction MSE**, with its own unchanged
+Good-calibration protocol, gives 30.14% Good flagged overall, 4.69% without
+2026C, and 100% Bad flagged. This is a diagnostic; it did not replace the primary
+score after looking at Test. Shared weights modestly improve on model 03's
+5.22%/100% trade-off, while the original-bin score still needs work.
+
+Marginal thinning of 128 high-stat Good monitoring LS (three draws each):
+
+| Counts retained | Model 03 flagged | Model 05 primary flagged |
+|---|---:|---:|
+| 100% | 0% | 0% |
+| 10% | 7.55% | 32.29% |
+| 1% | 100% | 72.14% |
+
+At 1%, median predicted-shape change (total variation) falls from 0.071 to
+0.022, with 99.48% of MEs still observed. Fitting is more stable, but anomaly
+robustness is not uniformly improved. Cached 1D histograms cannot reproduce
+event-level inter-ME correlations. Model 05's `basis.png` shows the fixed
+components and pooled Good-training shape; `metrics.json` contains the study.
 
 ## Workflow
 
@@ -109,6 +138,7 @@ scripts/
     config.py            paths, selected MEs and experiment IDs
     preprocessing.py     ME features, pile-up alignment and selections
     gaussian.py          binned Gaussian-mixture histogram fitting
+    shared_gaussian.py   fixed shapes, LS weights and original-bin residuals
     networks.py          conditional AE and histogram mixture networks
     core.py              shared scoring, calibration and checkpoint I/O
     model_0*.py          retained experiment definitions
