@@ -1,181 +1,133 @@
 # ML4DC-MuonPOG
 
 Small LS-level Muon anomaly-detection study using cached DIALS histograms.
-Eight `Muons/` MEs are used; OneHLT is excluded. New models use OMS pile-up
-as a condition, not a reconstruction target. Prescale is not a model input.
+Eight `Muons/` MEs are used; OneHLT is excluded. OMS pile-up is a condition,
+not a reconstruction target. Prescale is unused.
 
 ## Experiments
 
 | ID | Model |
 |---|---|
 | `01_ae_2feat` | Preserved mean/std AE baseline: 16 → 8 → 4 → 8 → 16 |
-| `02_ae_2feat_pileup` | Mean/std AE conditioned on pile-up; reconstructs only ME features |
-| `03_ae_gmm` | Fit each LS/ME histogram with Gaussians, then reconstruct the fitted shape parameters with a pile-up-conditioned AE |
-| `04_mdn` | Pile-up-conditioned Gaussian-mixture histogram density model |
-| `05_ae_gmm_shared` | Fixed Gaussian shapes learned from Good training LS; LS-specific weights reconstructed with a pile-up-conditioned AE |
-| `06_ae_gmm_shared32` | Same shared model with 32 Gaussians per ME (256 weight features) |
-| `07_ae_gmm_shared16` | Same shared model with 16 Gaussians per ME (128 weight features) |
+| `02_ae_2feat_pileup` | Mean/std AE conditioned on pile-up |
+| `04_mdn` | Gaussian-mixture histogram decoder conditioned on pile-up |
+| `05_ae_gmm_shared` | 30 shared Gaussians per ME → 240 LS weights → conditional AE |
+| `06_ae_kde` | Binned KDE inputs → conditional AE → original histogram fractions |
 
-Independent per-LS GMM fits with 2, 4 and 8 components are compared. The retained settings and
-network definitions live in `scripts/models/model_0*.py`. Gaussian components
-describe histogram shapes; they are not labels for individual physics processes.
-GMM uses bin-centre EM; low-stat component parameters can be unstable. MDN
-integrates Gaussian shapes over native bins, with a linear approximation for
-phi. Its deviance score is a diagnostic, not a calibrated probability.
-MDN receives histogram fractions, log-counts, observation masks and pile-up;
-it predicts shapes rather than counts. Counts enter the deviance score.
+Only the 30-component shared GMM remains. Retired independent GMM and shared
+8/16/32 variants, including their results, were archived outside the repository.
+The existing baseline, pile-up AE and MDN results are preserved.
 
-The retained GMM uses K=8, a 64/8 AE bottleneck and a 20-iteration EM cap;
-80 iterations improved the raw fits but worsened held-out AE reconstruction.
-The retained MDN uses K=8 and a 64/8 encoder. Candidates were selected on Good
-monitoring runs: four moment-AE settings, six GMM settings plus EM refinement,
-and six MDN settings with the best two refitted on all training LS.
+For shared GMM, Gaussian positions/widths are learned once from Good training
+LS, then fixed. Only LS mixture weights vary. Their total prior strength is 8.
+Components describe shapes, not identified physics processes.
 
-Model 05 is one controlled small study: K=8 shared means/widths, 64 weight
-features, the same 64/8 AE bottleneck as model 03, and total prior strength 8.
-The primary score compares original bin fractions with reconstructed shapes,
-using training bin variance plus count-dependent sampling variance. Training
-variance includes counting noise; this conservative diagnostic is not a p-value.
-Its score also differs from model 03, so results do not isolate representation alone.
-Model 06 changes only K=8 to K=32; the prior TOTAL remains 8, hidden layers
-64/8, and fitting/optimization budgets unchanged. Some MEs have only 30 bins,
-so 32 overlapping weights are not independently identifiable. This is a first
-fixed-budget comparison, not an optimally tuned K32 model. Model 07 repeats
-the same comparison at K=16, keeping all other settings unchanged.
+KDE uses bin-centre Gaussian kernels weighted by counts, with bandwidth fixed
+at one native bin. It is a binned approximation, not automatic SciPy bandwidth
+selection or a standalone KDE likelihood over LS features. Prior strength is
+also 8; phi kernels are wrapped. Smoothing is applied to inputs only, once.
+The AE reconstructs original unsmoothed bin fractions, whose scaler is fitted
+on Good training targets. These targets still contain counting noise.
+Both new AEs use 64/8 hidden layers and the same optimizer/epoch budget.
 
-## Current result
+## Evaluation
 
-Fixed-threshold Test comparison, 2024–2026 (2026-11-13 snapshot):
+Good 2024–2025 runs use a 70/15/15% train/validation/test split by run,
+stratified by era with seed 42. Bad and Unknown runs are Test-only; all 2026
+runs are Test. Saved checkpoints restore these roles during prediction.
+
+- Select one Muon0 PromptReco processing per physical run and DCS-ready LS.
+  There is no entry cut. Empty shapes are masked; missing PU is unscored.
+- Good monitoring runs select epochs. Separate Good calibration runs set one
+  fixed 97.5th-percentile threshold per model. Test does not select settings.
+- GMM/KDE scores compare original bin fractions with predicted shapes, using
+  empirical Good-training bin variance plus count-dependent sampling variance.
+  Training variance includes counting noise; the score is a conservative
+  residual diagnostic, not a p-value or raw likelihood.
+- RR Muon labels are run-level verdicts applied to LS for reference evaluation,
+  not LS-level ground truth. The current 2026 snapshot has no Muon Bad runs.
+  DCS is tracker-ready selection, not Muon certification.
+
+Test comparison, 2024–2026, snapshot 2026-11-13:
 
 | Model | Good flagged | Good flagged, no 2026C | Bad flagged |
 |---|---:|---:|---:|
 | `01_ae_2feat` | 29.87% | 4.34% | 99.84% |
 | `02_ae_2feat_pileup` | 30.63% | 5.36% | 100.00% |
-| `03_ae_gmm` | 30.30% | 5.22% | 100.00% |
 | `04_mdn` | 26.84% | 0.36% | 51.28% |
-| `05_ae_gmm_shared` | 31.96% | 7.24% | 99.15% |
-| `06_ae_gmm_shared32` | 30.96% | 5.82% | 99.84% |
-| `07_ae_gmm_shared16` | 30.98% | 5.88% | 99.46% |
+| `05_ae_gmm_shared` | 30.94% | 5.80% | 99.84% |
+| `06_ae_kde` | 28.80% | 2.95% | 92.33% |
 
-These are LS in RR-labelled runs: 181,011 Good LS (132,368 without 2026C)
-and 2,580 Bad LS. All seven models score the same Test cohort. Baseline remains the
-reference: PU/GMM did not improve this trade-off, while MDN reduces Good flags
-but misses many Bad-run LS. PU alone does not resolve 2026C.
-A matched no-PU version of model 02 gave 5.19% Good flagged without 2026C and
-100% Bad flagged, so a PU benefit was not demonstrated. Only one representative
-per family is retained; other candidates and retired DM/window results are removed
-from the active project. Existing results were backed up outside the repository.
+All models score the same Test cohort: 181,011 Good LS (132,368 without
+2026C) and 2,580 Bad LS. KDE reduces Good flags but misses more Bad-run LS;
+it is not a replacement recommendation. PU alone does not resolve 2026C.
 
-For model 05, auxiliary **weight-reconstruction MSE**, with its own unchanged
-Good-calibration protocol, gives 30.14% Good flagged overall, 4.69% without
-2026C, and 100% Bad flagged. This is a diagnostic; it did not replace the primary
-score after looking at Test. Shared weights modestly improve on model 03's
-5.22%/100% trade-off, while the original-bin score still needs work.
-Model 06's auxiliary weight score gives 4.72%/99.96% without 2026C, essentially
-unchanged from K8. Its primary original-bin score improves, but extreme
-low-statistics robustness worsens in the thinning check below.
-Model 07's auxiliary weight score gives 4.75%/100% without 2026C. Increasing
-the Gaussian count did not consistently improve this diagnostic.
-
-Marginal thinning of 128 high-stat Good monitoring LS (three draws each):
-
-| Counts retained | Per-LS GMM | Shared 8 | Shared 16 | Shared 32 |
-|---|---:|---:|---:|---:|
-| 100% | 0% | 0% | 0.78% | 0.78% |
-| 10% | 7.55% | 32.29% | 24.74% | 20.57% |
-| 1% | 100% | 72.14% | 85.16% | 98.18% |
-
-At 1%, median predicted-shape change (total variation) falls from 0.071 to
-0.022, with 99.48% of MEs still observed. Fitting is more stable, but anomaly
-robustness is not uniformly improved. Cached 1D histograms cannot reproduce
-event-level inter-ME correlations. Model 05's `basis.png` shows the fixed
-components and pooled Good-training shape; `metrics.json` contains the study.
-Model 06's `basis.png` overlays the K8 and K32 pooled fits.
-Model 07's `basis.png` compares K8/K16/K32; all previous results are preserved.
+A marginal thinning check uses 128 high-stat Good monitoring LS, three draws
+at each retained fraction. At 1% counts, GMM/KDE flag 97.92%/57.03%; extreme
+low-statistics robustness remains unresolved. This cannot reproduce event-level
+inter-ME correlations from cached 1D histograms. Full details are in each new
+model's `metrics.json`. KDE is one fixed-bandwidth first test, not an optimized
+KDE architecture study.
 
 ## Workflow
 
-```text
-Cached MEs + OMS pile-up → preprocessing → train → checkpoint → predict → plot
-```
-
 ```bash
-# Fit using 2024–2025 only
-bash runs/train.sh model_02_ae_2feat_pileup --years 2024 2025
+# Train from the existing 2024–2025 cache
+bash runs/train.sh model_06_ae_kde --years 2024 2025
 
-# Predict all three years using the saved model, scaling and fixed threshold
-bash runs/predict.sh output/model/02_ae_2feat_pileup data/dials \
-  output/predict/02_ae_2feat_pileup --years 2024 2025 2026 --prompt-reco
+# Apply saved scaling and threshold to all three years
+bash runs/predict.sh output/model/06_ae_kde data/dials \
+  output/predict/06_ae_kde --years 2024 2025 2026 --prompt-reco
 
-# Draw the combined Test; no fitting or recalibration
-bash runs/plotting/scores.sh --input output/predict/02_ae_2feat_pileup
-
-# Inspect normalized cached MEs
+# Plot combined Test results, or inspect cached MEs
+bash runs/plotting/scores.sh --input output/predict/06_ae_kde
 bash runs/plotting/mes.sh
 ```
 
-Use the same recipes with another model ID. Existing predictions are protected;
-use a new `--output` directory for a separate experiment. No model command fetches
-or regenerates DIALS data.
-MDN training uses Apple MPS when available; saved checkpoints support CPU prediction.
+Use the same recipes with another model ID. Compatible checkpoints are reused;
+existing predictions are protected. Use a separate `--output` for a new study.
+Model commands never fetch or regenerate DIALS data. MDN training uses Apple
+MPS when available; saved checkpoints support CPU prediction.
 
-## Data and evaluation
-
-- **Split:** Good runs from 2024–2025 are split 70/15/15% by run, stratified by era
-  with seed 42. Bad and Unknown runs are Test-only; all 2026 runs are also Test.
-  Prediction restores the saved run roles.
-- **Selection:** one Muon0 PromptReco processing per physical run, with DCS-ready
-  LS. There is no entry cut. Empty histogram shapes are masked where required;
-  missing pile-up is never replaced with zero.
-- **Validation:** monitoring runs select settings and epochs. Separate Good
-  calibration runs set the 97.5th-percentile threshold. Test does not select
-  settings, scalers or thresholds.
-- **OMS:** `data/oms/<year>.json` holds the existing nine LS fields, including
-  pile-up. The 2026-11-13 snapshot covers all 1,276 cached PromptReco runs and
-  581,836 DIALS LS. Pile-up is joined by Run/LS; prescale is unused.
-- **Labels:** annual RR Muon verdicts give Good/Bad/Unknown run labels. These are
-  applied to LS for reference evaluation, not LS-level ground truth. The current
-  2026 RR snapshot has no Muon Bad runs. DCS is a tracker-ready selection, not
-  Muon certification.
-
-Model plots combine the 2024–2026 Test. `Score` is anomaly score divided by the
-fixed threshold, so the threshold line is 1. Points use Good/Bad/Unknown colors;
-LS are consecutive and sparse x ticks show Run numbers. Confusion matrices show
-LS counts and row percentages, excluding Unknown and unscored LS.
-`confusion_matrix_no2026C.png` repeats the evaluation without 2026C, at the same
-threshold. It is a diagnostic alongside the full Test.
-
-## Structure
+## Files and outputs
 
 ```text
 scripts/
-  data/                  DIALS cache and annual DCS/OMS/RR access
+  data/                 DIALS cache and annual DCS/OMS/RR access
   models/
-    config.py            paths, selected MEs and experiment IDs
-    preprocessing.py     ME features, pile-up alignment and selections
-    gaussian.py          binned Gaussian-mixture histogram fitting
-    shared_gaussian.py   fixed shapes, LS weights and original-bin residuals
-    networks.py          conditional AE and histogram mixture networks
-    core.py              shared scoring, calibration and checkpoint I/O
-    model_0*.py          retained experiment definitions
-  train.py               fit and calibrate one model
-  predict.py             apply a saved checkpoint
-  plotting/              ME, score, loss and confusion-matrix plots
+    config.py           paths, MEs and retained experiment IDs
+    preprocessing.py    representations, PU alignment and selections
+    gaussian.py         weighted Gaussian fitting and bin probabilities
+    shared_gaussian.py  fixed shapes, LS weights and raw-bin residuals
+    kde.py              KDE inputs and original-bin targets
+    networks.py         conditional AE and MDN
+    core.py             calibration, scoring and checkpoint I/O
+    model_0*.py         experiment definitions
+  train.py              fit and calibrate
+  predict.py            saved model → LS scores
+  plotting/             ME, score, loss and confusion-matrix plots
 runs/
-  data/                  metadata and DIALS recipes
-  train.sh               MODEL → checkpoint
-  predict.sh             checkpoint + cache → predictions
-  plotting/              saved predictions or MEs → figures
+  data/                 metadata and DIALS recipes
+  train.sh              MODEL → checkpoint
+  predict.sh            checkpoint + cache → predictions
+  plotting/             saved data/predictions → figures
 data/
-  dials/<dataset>/<run>/  cached ME Parquet files
+  dials/<dataset>/<run>/ cached ME Parquet files
   {dcs,oms,rr}/<year>.json
 output/
-  model/<ID>/            checkpoint, fitted scaling and threshold
-  predict/<ID>/          scores.parquet and metrics.json
-  plots/{mes,<ID>}/      ME figures and combined Test results
+  model/<ID>/           checkpoint, scaling and fixed threshold
+  predict/<ID>/         scores.parquet and metrics.json
+  plots/{mes,<ID>}/     figures
 ```
 
-Dataset directory names replace `/` with `__`; cached runs need no inventory.
-Generated data and results are ignored by Git. Metadata recipes use
-`.venv-metadata`, DIALS collection uses `.venv-dials`, and model recipes use the
-project environment. Credentials stay outside the repository.
+`Score` plots divide by the fixed threshold, so the line is 1. Test points use
+Good/Bad/Unknown colors. Confusion matrices exclude Unknown and unscored LS;
+`confusion_matrix_no2026C.png` uses the same cut without 2026C. `basis.png`
+shows the GMM reference; KDE's `reference.png` shows raw and smoothed inputs.
+
+OMS annual JSON keeps the existing nine LS fields. PU is joined by Run/LS and
+covers all 1,276 cached PromptReco runs / 581,836 LS in the current snapshot.
+Dataset folder names replace `/` with `__`; cached runs need no inventory.
+Generated data/results are Git-ignored. Metadata recipes use `.venv-metadata`,
+DIALS collection uses `.venv-dials`, and models use the project environment.
+Credentials stay outside the repository.
