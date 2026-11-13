@@ -13,6 +13,8 @@ not a reconstruction target. Prescale is unused.
 | `04_mdn` | Gaussian-mixture histogram decoder conditioned on pile-up |
 | `05_ae_gmm_shared` | 30 shared Gaussians per ME → 240 LS weights → conditional AE |
 | `06_ae_kde` | Binned KDE inputs → conditional AE → original histogram fractions |
+| `07_ae_kde_adaptive` | Training-selected spatially adaptive KDE → the same conditional AE |
+| `08_ae_kde_masked` | Predict each ME from the other seven KDE histograms and pile-up |
 
 Only the 30-component shared GMM remains. Retired independent GMM and shared
 8/16/32 variants, including their results, were archived outside the repository.
@@ -66,8 +68,66 @@ A marginal thinning check uses 128 high-stat Good monitoring LS, three draws
 at each retained fraction. At 1% counts, GMM/KDE flag 97.92%/57.03%; extreme
 low-statistics robustness remains unresolved. This cannot reproduce event-level
 inter-ME correlations from cached 1D histograms. Full details are in each new
-model's `metrics.json`. KDE is one fixed-bandwidth first test, not an optimized
-KDE architecture study.
+model's `metrics.json`. `06_ae_kde` remains the original fixed-bandwidth reference.
+
+## KDE follow-up
+
+```bash
+bash runs/study_kde.sh
+```
+
+This trains only models 07/08, then evaluates five predefined variants:
+
+- `06_ae_kde_top1`, `06_ae_kde_top2`: preserve the trained KDE AE; normalize
+  ME residual scales using Good monitoring ranks, then combine the largest
+  one/two terms. A rank-mean control is reported in `kde_study.json`.
+- `06_ae_kde_mmd`: preserve the same AE; compare observed and predicted raw
+  shapes using multiscale MMD (1/4/16 native bins), with a count-dependent
+  multinomial null correction and Good-monitor rank normalization.
+- `07_ae_kde_adaptive`: use spatial bandwidths of 0.5–2 native bins, with a
+  per-ME multiplier selected by count-split prediction on Good TRAIN only.
+  The kernels are frozen at inference; this is not LS-specific count adaptation.
+- `08_ae_kde_masked`: hide one complete ME during training and fit only its
+  bins. Inference makes eight held-out passes. Counts affect scoring, not the
+  network input; the targets and residual formula match model 06.
+
+The same frozen runs, seed, early-stopping budget and separate Good calibration
+quantile are used. No Bad/Test results choose settings or thresholds. Comparisons
+include all previously detected Bad, Regions A–D and the same marginal thinning
+check. These are exploratory results on previously inspected runs, not a fresh
+blind test. B is Validation and C is Train/Validation in this split: their
+`regions_all_splits` results are descriptive, not held-out Test performance.
+MMD corrections are diagnostics, not p-values; rank scores have
+finite tail resolution. Zero scores appear only in the linear plots. No method
+can recover absent low-statistics information.
+
+Follow-up results (same snapshot; Good Test excludes 2026C in this table):
+
+| KDE variant | Good flagged | Bad flagged | Good flagged after 1% thinning |
+|---|---:|---:|---:|
+| Original | 2.95% | 92.33% | 57.03% |
+| Top-1 ME | 3.78% | 99.50% | 61.46% |
+| Top-2 MEs | 4.62% | 99.84% | 90.63% |
+| Count-corrected MMD | 3.50% | 95.00% | 0.78% |
+| Adaptive KDE | 3.06% | 92.21% | 40.36% |
+| Masked ME prediction | 5.12% | 92.29% | 92.97% |
+
+There is no clear replacement. Top-2 retains all original KDE Bad flags, but
+loses four LS caught by the mean/std AE while gaining four others. MMD is the
+most promising low-count direction, but misses 129 previously detected Bad-run
+LS; all have GlbMuon entries below 1,000 (median 58). Thinning uses 128 unique
+monitoring LS and three marginal draws, not independent real-data false-positive
+measurements. Adaptive/masked changes do not show a compelling gain here.
+Including 2026C, Good flag rates remain 28.86–30.44%; no variant resolves that
+operating-condition shift. Full cohort, per-run retention and region results
+are saved in the JSON summary below.
+
+Each variant saves its checkpoint, scores and usual plots in its own output
+directory. Score-only checkpoints still identify the underlying model 06 and
+store the new score transform/threshold, so `runs/predict.sh` can reuse them.
+The overall summary is `output/predict/kde_study.json`. The `reconstruction/`
+figures in models 06/07/08 show actual per-LS predictions for fixed Good/Bad
+examples; model 06's `reference.png` only shows pooled input smoothing.
 
 ## Workflow
 
@@ -100,16 +160,19 @@ scripts/
     gaussian.py         weighted Gaussian fitting and bin probabilities
     shared_gaussian.py  fixed shapes, LS weights and raw-bin residuals
     kde.py              KDE inputs and original-bin targets
+    kde_scores.py       optional rank aggregation and count-corrected MMD
     networks.py         conditional AE and MDN
     core.py             calibration, scoring and checkpoint I/O
     model_0*.py         experiment definitions
   train.py              fit and calibrate
   predict.py            saved model → LS scores
+  study_kde.py          fixed KDE follow-up comparison using existing data
   plotting/             ME, score, loss and confusion-matrix plots
 runs/
   data/                 metadata and DIALS recipes
   train.sh              MODEL → checkpoint
   predict.sh            checkpoint + cache → predictions
+  study_kde.sh          train 07/08 and run the four KDE comparisons
   plotting/             saved data/predictions → figures
 data/
   dials/<dataset>/<run>/ cached ME Parquet files
