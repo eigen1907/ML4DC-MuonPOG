@@ -93,6 +93,37 @@ predictions. MMD's `metrics.json` includes full-cohort results, thinning checks
 and descriptive Regions A–D diagnostics. B/C include
 training/validation runs, so their diagnostics are not independent Test results.
 
+## Top-N MMD comparison
+
+```bash
+bash runs/compare_mmd.sh
+```
+
+This compares the largest 1/2/3 normalized ME scores **within each LS**.
+The selected MEs may differ between LS. Observed zeros remain observations;
+empty MEs are missing, and fewer than N observed MEs use those available.
+AE weights, count corrections and Good-monitor ECDFs stay fixed. Each N gets
+its own 97.5th-percentile threshold from the same separate Good calibration LS.
+
+| MMD aggregation | Good flagged, no 2026C | Bad flagged | Previously flagged MMD Bad lost |
+|---|---:|---:|---:|
+| All observed MEs | 3.50% | 95.00% | 0 |
+| Top-1 | 4.15% | 95.66% | 15 |
+| Top-2 | 4.24% | 95.54% | 11 |
+| Top-3 | 3.94% | 95.47% | 9 |
+
+All three recover Run 395719 / LS95, but overall gains are small and some old
+Bad detections are lost. At 1% marginal thinning, Good flag fractions are
+0.78% (mean), 3.13% (Top-1), 1.82% (Top-2) and 1.30% (Top-3).
+Top-1 calibration flags 2.455% due to threshold ties; Top-2/3 flag 2.500%.
+This previously inspected Test is exploratory, so it does not select a new
+default N. The original mean checkpoint and results remain unchanged.
+
+Checkpoints, scores and plots are nested under each area's
+`06_ae_kde_mmd/top1/`, `top2/`, `top3/`. The summary is
+`output/predict/06_ae_kde_mmd/topn.json`; the shared AE loss stays in the parent
+plot folder. No extra model definitions or training jobs are needed.
+
 ## Workflow
 
 ```bash
@@ -133,11 +164,13 @@ scripts/
     model_0*.py         experiment definitions
   train.py              fit and calibrate
   predict.py            saved model → LS scores
+  compare_mmd.py        frozen MMD top-1/2/3 scoring comparison
   plotting/             ME, score, loss and confusion-matrix plots
 runs/
   data/                 metadata and DIALS recipes
   train.sh              MODEL → checkpoint
   predict.sh            checkpoint + cache → predictions
+  compare_mmd.sh        rescore cached MMD terms and check low-statistics robustness
   plotting/             saved data/predictions → figures
 data/
   dials/<dataset>/<run>/ cached ME Parquet files
