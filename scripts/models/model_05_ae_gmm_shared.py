@@ -5,7 +5,7 @@ from scripts.models.networks import ConditionalAE
 
 NAME = SHARED_GMM_AE
 KIND = 'shared_gmm'
-SETTINGS = dict(components=8, hidden=(64, 8), epochs=100, lr=.001,
+SETTINGS = dict(components=30, hidden=(64, 8), epochs=100, lr=.001,
                 weight_decay=1e-4, patience=10, batch_size=1024,
                 condition_transform='linear', basis_iterations=80,
                 prior_strength=8., weight_iterations=30,

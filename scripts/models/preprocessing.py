@@ -164,36 +164,28 @@ def model_features(dataset, spec, settings, basis=None):
         return values, np.ones_like(values, dtype=bool), np.repeat(
             np.arange(len(dataset['me_names'])), 2), [
             f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
-    if spec.KIND == 'shared_gmm':
+    if spec.KIND in ('shared_gmm', 'kde'):
         from scripts.models.shared_gaussian import fit_weights
 
         if basis is None:
-            raise ValueError('Shared Gaussian features require a trained fixed basis')
+            raise ValueError('Density features require a trained basis/reference')
         digest = hashlib.sha256()
         for item in basis:
-            digest.update(np.asarray(item['weights'], dtype='<f8').tobytes())
+            reference = item['weights'] if spec.KIND == 'shared_gmm' else item['raw_reference']
+            digest.update(np.asarray(reference, dtype='<f8').tobytes())
             digest.update(np.asarray(item['probabilities'], dtype='<f8').tobytes())
-        key = (digest.hexdigest(), settings['prior_strength'], settings['weight_iterations'])
-        cached = dataset.get('_shared_gmm_cache')
+        key = (spec.KIND, digest.hexdigest(), settings['prior_strength'], settings.get('weight_iterations'))
+        cached = dataset.get('_shape_cache')
         if cached is None or cached[0] != key:
-            result = fit_weights(dataset['histograms'], basis,
-                                 prior_strength=key[1], iterations=key[2])
-            dataset['_shared_gmm_cache'] = (key, result)
-        result = dataset['_shared_gmm_cache'][1]
+            if spec.KIND == 'shared_gmm':
+                result = fit_weights(dataset['histograms'], basis,
+                                     prior_strength=key[2], iterations=key[3])
+            else:
+                from scripts.models.kde import smooth
+
+                result = smooth(dataset['histograms'], basis, prior_strength=key[2])
+            dataset['_shape_cache'] = (key, result)
+        result = dataset['_shape_cache'][1]
         owner = result['feature_me']
         return result['features'], result['valid'][:, owner], owner, result['feature_names']
-    if spec.KIND != 'gmm':
-        raise ValueError('Feature targets are only defined for moment and GMM AEs')
-    from scripts.models.gaussian import fit_mixtures
-
-    key = (settings['components'], settings.get('gmm_iterations', 20),
-           settings.get('gmm_scale_floor_bins', 12**-.5), settings.get('gmm_pseudocount', .5))
-    cache = dataset.setdefault('_gmm_cache', {})
-    if key not in cache:
-        result = fit_mixtures(dataset['histograms'], dataset['axes'], components=key[0],
-                              iterations=key[1], scale_floor_bins=key[2], pseudocount=key[3])
-        cache.clear()
-        cache[key] = {name: result[name] for name in ('features', 'valid', 'feature_me', 'feature_names')}
-    result = cache[key]
-    owner = result['feature_me']
-    return result['features'], result['valid'][:, owner], owner, result['feature_names']
+    raise ValueError('Unknown feature representation')

@@ -32,8 +32,8 @@ def predict_terms(spec, saved, dataset):
     if 'pileup' not in dataset:
         dataset['pileup'] = load_pileup(dataset['frame'])
     settings = saved['settings']
-    if spec.KIND == 'shared_gmm' and settings['score'] != 'variance_residual':
-        raise ValueError('Unknown shared-Gaussian score in checkpoint')
+    if spec.KIND in ('shared_gmm', 'kde') and settings['score'] != 'variance_residual':
+        raise ValueError('Unknown density-reconstruction score in checkpoint')
     conditions, _, available = condition_values(
         dataset['pileup'], scaler=saved['condition_scaler'],
         transform=settings.get('condition_transform', 'linear'))
@@ -54,7 +54,8 @@ def predict_terms(spec, saved, dataset):
             raise ValueError('Checkpoint feature names/order differ from the input')
         mask = np.asarray(mask, dtype=bool)
         scaled = saved['scaler'].transform(features)
-        inputs = torch.from_numpy(np.where(mask, scaled, 0).astype(np.float32))
+        inputs = torch.from_numpy(np.where(mask, scaled, 0).astype(np.float32, copy=False))
+        del scaled
     inputs = torch.as_tensor(inputs, dtype=torch.float32)
     if inputs.shape[1] != saved['input_dim']:
         raise ValueError('Checkpoint input size differs from the prepared inputs')
@@ -68,11 +69,16 @@ def predict_terms(spec, saved, dataset):
             if spec.KIND == 'mdn':
                 result = histogram_scores(prediction, [h[selected] for h in dataset['histograms']])
                 terms[selected] = result[settings.get('score', 'deviance')].numpy()
-            elif spec.KIND == 'shared_gmm':
+            elif spec.KIND in ('shared_gmm', 'kde'):
                 from scripts.models.shared_gaussian import decode_weights, histogram_terms
 
                 weights = saved['scaler'].inverse_transform(prediction.numpy())
-                probabilities = decode_weights(weights, saved['basis'])
+                if spec.KIND == 'shared_gmm':
+                    probabilities = decode_weights(weights, saved['basis'])
+                else:
+                    from scripts.models.kde import decode
+
+                    probabilities = decode(weights, saved['basis'])
                 terms[selected] = histogram_terms(
                     [h[selected] for h in dataset['histograms']], probabilities,
                     saved['bin_variance'], saved['probability_floor'])

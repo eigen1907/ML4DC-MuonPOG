@@ -1,8 +1,8 @@
-"""Small binned Gaussian-mixture fits, one fit per ME and LS.
+"""Weighted binned Gaussian fitting and native-bin probabilities.
 
-EM treats bin centres as weighted observations; no counts are expanded into
-individual samples. Reported likelihoods integrate each Gaussian over the
-actual bin edges. This is a descriptive shape fit, not an anomaly score.
+EM treats bin centres as weighted observations without expanding events.
+The shared model uses these fits to learn fixed Gaussian shapes from pooled
+Good training histograms; anomaly scoring lives in shared_gaussian.py.
 """
 
 import numpy as np
@@ -64,57 +64,6 @@ def _axis(axis, bins, scale_floor_bins=SCALE_FLOOR_BINS):
     return centers.astype(np.float32), edges, floor, periodic
 
 
-def parameters_from_features(features, axes, components, *, scale_floor_bins=SCALE_FLOOR_BINS):
-    """Project decoded shape features back to valid Gaussian parameters.
-
-    Negative predicted weights are clipped and renormalized; means use native
-    support (circular atan2 for phi), and scales retain the original fitting floor.
-    Observed N=0 masks must still be applied by the caller when scoring shapes.
-    """
-    features = np.asarray(features, dtype=np.float32)
-    if (features.ndim != 2 or not np.isfinite(features).all() or type(components) is not int
-            or components < 1 or not np.isfinite(scale_floor_bins) or scale_floor_bins <= 0):
-        raise ValueError("Expected finite LS-by-feature values and positive mixture sizes/floors")
-    result = np.empty((len(features), len(axes), components, 3), dtype=np.float32)
-    start = 0
-    for me, axis in enumerate(axes):
-        if "edges" not in axis:
-            raise ValueError("Native axis edges are required to decode fitted features")
-        _, _, floor, periodic = _axis(axis, len(axis["edges"]) - 1, scale_floor_bins)
-        stop = start + components * (4 if periodic else 3)
-        if stop > features.shape[1]:
-            raise ValueError("Feature count does not match the Gaussian representation")
-        block = features[:, start:stop].reshape(len(features), components, -1)
-        weights = np.maximum(block[..., 0], 1e-8)
-        result[:, me, :, 0] = weights / weights.sum(-1, keepdims=True)
-        result[:, me, :, 1] = (np.arctan2(block[..., 1], block[..., 2]) / (2 * np.pi) % 1
-                               if periodic else np.clip(block[..., 1], 0, 1))
-        result[:, me, :, 2] = np.clip(block[..., -1], floor, .5)
-        start = stop
-    if start != features.shape[1]:
-        raise ValueError("Feature count does not match the Gaussian representation")
-    return result
-
-
-def probabilities_from_features(features, axes, components, *, scale_floor_bins=SCALE_FLOOR_BINS,
-                                batch_size=512):
-    """Decode AE outputs into native-bin probabilities without large CDF temporaries."""
-    if type(batch_size) is not int or batch_size < 1:
-        raise ValueError("Expected a positive decoding batch size")
-    parameters = parameters_from_features(features, axes, components, scale_floor_bins=scale_floor_bins)
-    probabilities = []
-    for me, axis in enumerate(axes):
-        _, edges, _, periodic = _axis(axis, len(axis["edges"]) - 1, scale_floor_bins)
-        probability = np.empty((len(features), len(edges) - 1), dtype=np.float32)
-        for first in range(0, len(features), batch_size):
-            last = min(len(features), first + batch_size)
-            p = parameters[first:last, me]
-            probability[first:last] = gaussian_bin_probabilities(
-                p[..., 0], p[..., 1], p[..., 2], edges, periodic=periodic)
-        probabilities.append(probability)
-    return probabilities
-
-
 def _fit_batch(counts, centers, components, floor, periodic, iterations, tolerance, pseudocount):
     totals = counts.sum(1)
     normalized = counts / totals[:, None]
@@ -169,15 +118,11 @@ def _fit_batch(counts, centers, components, floor, periodic, iterations, toleran
 
 def fit_mixtures(histograms, axes, components=2, *, iterations=20, batch_size=512,
                  tolerance=1e-4, pseudocount=.5, scale_floor_bins=SCALE_FLOOR_BINS):
-    """Return Gaussian parameters and shape features for each LS/ME.
+    """Fit weighted histograms and return parameters, masks and convergence data.
 
-    parameters: (LS, ME, K, 3), ordered as weight, mean, scale, with components
-    sorted by mean. Other MEs use their full native range, including signed eta.
-    Phi uses true circular coordinates; its feature means are sine/cosine pairs.
-    features: 3K columns per ordinary ME, 4K per phi ME. Empty MEs have zero
-    features, valid=False and NaN fit diagnostics; their parameters are placeholders.
-    Low-count fits remain weakly identified despite the bin-resolution scale floor and
-    weight pseudocount. No training labels or other LS enter any individual fit.
+    Parameters have shape (histogram, ME, component, 3), storing weight,
+    normalized location and width, sorted by location. Phi wraps on a circle.
+    Empty histograms have valid=False and zero placeholder parameters.
     """
     if (type(components) is not int or components < 1 or type(iterations) is not int or iterations < 1
             or type(batch_size) is not int or batch_size < 1
@@ -194,14 +139,10 @@ def fit_mixtures(histograms, axes, components=2, *, iterations=20, batch_size=51
     parameters = np.zeros((*shape, components, 3), dtype=np.float32)
     valid = np.zeros(shape, dtype=bool)
     totals = np.zeros(shape, dtype=np.float64)
-    fit_nll, fit_deviance = (np.full(shape, np.nan) for _ in range(2))
     n_iterations = np.zeros(shape, dtype=np.int16)
     converged = np.zeros(shape, dtype=bool)
-    features, names, feature_me, normalized_edges, periodic_axes = [], [], [], [], []
     for me, (histogram, axis) in enumerate(zip(arrays, axes)):
-        centers, edges, floor, periodic = _axis(axis, histogram.shape[1], scale_floor_bins)
-        normalized_edges.append(edges)
-        periodic_axes.append(periodic)
+        centers, _, floor, periodic = _axis(axis, histogram.shape[1], scale_floor_bins)
         for start in range(0, size, batch_size):
             stop = min(size, start + batch_size)
             h = np.asarray(histogram[start:stop], dtype=np.float32)
@@ -218,32 +159,5 @@ def fit_mixtures(histograms, axes, components=2, *, iterations=20, batch_size=51
                                            iterations, tolerance, pseudocount)
             parameters[rows, me] = fitted
             n_iterations[rows, me], converged[rows, me] = used, done
-            probability = gaussian_bin_probabilities(fitted[..., 0], fitted[..., 1], fitted[..., 2], edges, periodic=periodic)
-            fractions = h[observed] / total[observed, None]
-            log_probability = np.log(np.maximum(probability, 1e-300))
-            fit_nll[rows, me] = -(fractions * log_probability).sum(1)
-            empirical = np.log(np.maximum(fractions, 1e-300))
-            fit_deviance[rows, me] = np.maximum(0, 2 * (fractions * (empirical - log_probability)).sum(1))
-        values = parameters[:, me]
-        pieces = [values[..., 0]]
-        kinds = ["weight"]
-        if periodic:
-            pieces.extend([np.sin(2 * np.pi * values[..., 1]), np.cos(2 * np.pi * values[..., 1])])
-            kinds.extend(["mean_sin", "mean_cos"])
-        else:
-            pieces.append(values[..., 1])
-            kinds.append("mean")
-        pieces.append(values[..., 2])
-        kinds.append("scale")
-        block = np.stack(pieces, axis=-1).reshape(size, -1)
-        block[~valid[:, me]] = 0
-        features.append(block)
-        feature_me.extend([me] * block.shape[1])
-        stem = axis.get("stem", f"me_{me}")
-        names.extend(f"{stem}__g{component}_{kind}" for component in range(components) for kind in kinds)
-    return dict(features=np.concatenate(features, axis=1), parameters=parameters,
-                valid=valid, totals=totals, fit_nll=fit_nll, fit_deviance=fit_deviance,
-                iterations=n_iterations, converged=converged, feature_names=names,
-                feature_me=np.asarray(feature_me, dtype=np.int64),
-                normalized_edges=normalized_edges, periodic=periodic_axes, components=components,
-                scale_floor_bins=float(scale_floor_bins))
+    return dict(parameters=parameters, valid=valid, totals=totals,
+                iterations=n_iterations, converged=converged)

@@ -97,14 +97,20 @@ def fit_conditioned(dataset, context, spec, settings=None):
                  condition_digest=signature['pileup_sha256'],
                  me_names=dataset['me_names'], axes=dataset['axes'],
                  run_split=dataset['run_split'], experiment=spec.NAME)
-    if spec.KIND == 'shared_gmm':
+    if spec.KIND in ('shared_gmm', 'kde'):
         from scripts.models.shared_gaussian import fit_basis, training_variance
 
         basis_train = np.zeros(len(frame), dtype=bool)
         basis_train[train[available[train]]] = True
-        saved['basis'] = fit_basis(dataset['histograms'], dataset['axes'], basis_train,
-                                  components=settings['components'],
-                                  iterations=settings['basis_iterations'])
+        if spec.KIND == 'shared_gmm':
+            saved['basis'] = fit_basis(dataset['histograms'], dataset['axes'], basis_train,
+                                      components=settings['components'],
+                                      iterations=settings['basis_iterations'])
+        else:
+            from scripts.models.kde import train_reference
+
+            saved['basis'] = train_reference(dataset['histograms'], dataset['axes'], basis_train,
+                                            bandwidth_bins=settings['bandwidth_bins'])
         saved['bin_variance'] = training_variance(dataset['histograms'], basis_train)
         saved['probability_floor'] = [
             .5 / (dataset['totals'][basis_train, me].sum(dtype=np.float64) + .5 * h.shape[1])
@@ -141,9 +147,21 @@ def fit_conditioned(dataset, context, spec, settings=None):
     else:
         if (mask[train].sum(0) == 0).any():
             raise ValueError('A model feature has no observed Good training values')
-        scaler = StandardScaler().fit(np.where(mask[train], features[train], np.nan))
+        target_values = features
+        if spec.KIND == 'kde':
+            from scripts.models.kde import raw_features
+
+            target_values = raw_features(dataset['histograms'])
+        scaler = StandardScaler().fit(np.where(mask[train], target_values[train], np.nan))
         scaled = scaler.transform(features)
-        inputs = torch.from_numpy(np.where(mask, scaled, 0).astype(np.float32))
+        inputs = torch.from_numpy(np.where(mask, scaled, 0).astype(np.float32, copy=False))
+        del scaled
+        if spec.KIND == 'kde':
+            target_values = scaler.transform(target_values, copy=False)
+            target_values[~mask] = 0
+            targets = torch.from_numpy(target_values)
+        else:
+            targets = inputs
         masks = torch.from_numpy(mask)
         feature_me = torch.as_tensor(saved['feature_me'], dtype=torch.long)
         saved['scaler'] = scaler
@@ -166,7 +184,7 @@ def fit_conditioned(dataset, context, spec, settings=None):
         if is_histogram:
             return histogram_loss(predicted, [h[rows] for h in histograms],
                                   count_weighted=settings.get('count_weighted', False))
-        return _feature_loss(predicted, inputs[rows], masks[rows], feature_me, len(dataset['me_names']))
+        return _feature_loss(predicted, targets[rows], masks[rows], feature_me, len(dataset['me_names']))
 
     history = dict(train=[], validation=[], best_epoch=0,
                    loss='Multinomial NLL' if is_histogram and settings.get('count_weighted', False)
