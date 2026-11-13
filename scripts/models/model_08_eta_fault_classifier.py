@@ -1,4 +1,4 @@
-"""Single-eta-histogram detector trained only on Good data and simulated losses.
+"""Model 08: eta MLP classifier trained on Good data and simulated losses.
 
 Normal/fault pairs have exactly the same N and pile-up. Both histograms are
 multinomial draws from the same Good-parent pilot, with only the fault shape
@@ -15,6 +15,7 @@ from scripts.models.kde import train_reference
 from scripts.models.preprocessing import _rows
 
 
+NAME = '08_eta_fault_classifier'
 SETTINGS = dict(seed=42, train_limit=16384, epochs=40, patience=6, batch_size=512,
                 lr=.001, weight_decay=1e-4, prior_strength=8., bandwidth_bins=1.,
                 min_fraction=.01, severity=(.25, .95))
@@ -200,7 +201,7 @@ def fit_classifier(hist, pu, train_indices, monitor_indices, axis, settings=None
         if epoch == 1 or epoch % 5 == 0:
             print(f'eta classifier epoch {epoch:02d}: train BCE {total_loss / len(values):.5f}, '
                   f'monitor BCE {monitor_loss:.5f}, best {best_loss:.5f}', flush=True)
-    return dict(state_dict=best_state, scaler=scaler, reference=reference, axis=dict(axis),
+    return dict(experiment=NAME, state_dict=best_state, scaler=scaler, reference=reference, axis=dict(axis),
                 settings=settings, history=history, best_epoch=best_epoch, bins=hist.shape[1],
                 train_indices=train, monitor_indices=monitor,
                 score='softplus(logit), ranking only')

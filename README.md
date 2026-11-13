@@ -1,10 +1,10 @@
 # ML4DC-MuonPOG
 
 Small LS-level Muon anomaly-detection study using cached DIALS histograms.
-Eight `Muons/` MEs are used; OneHLT is excluded. OMS pile-up is a condition,
-not a reconstruction target. Prescale is unused.
+Core models use eight `Muons/` MEs; OneHLT is excluded. Models 07/08 use eta
+only. OMS pile-up is a condition, not a reconstruction target. Prescale is unused.
 
-## Experiments
+## Models
 
 | ID | Model |
 |---|---|
@@ -14,6 +14,12 @@ not a reconstruction target. Prescale is unused.
 | `05_ae_gmm_shared` | 30 shared Gaussians per ME → 240 LS weights → conditional AE |
 | `06_ae_kde` | Binned KDE inputs → conditional AE → original histogram fractions |
 | `06_ae_kde_mmd` | Reuse the KDE AE, score shapes with count-corrected MMD |
+| `07_eta_betabinomial` | Statistical eta acceptance-loss test; no neural network |
+| `08_eta_fault_classifier` | Eta MLP classifier trained on normal/synthetic-fault pairs |
+
+Models 01–06 use `runs/train.sh` and `runs/predict.sh`. Models 07/08 are
+standalone eta-only prototypes run together with `bash runs/compare_eta.sh`;
+they are not registered with the core train/predict CLI. Neither is an autoencoder.
 
 Only the 30-component shared GMM remains. Retired independent GMM and shared
 8/16/32 variants, including their results, were archived outside the repository.
@@ -124,10 +130,10 @@ Checkpoints, scores and plots are nested under each area's
 `output/predict/06_ae_kde_mmd/topn.json`; the shared AE loss stays in the parent
 plot folder. No extra model definitions or training jobs are needed.
 
-## Eta-only experiments
+## 07 / 08: eta models
 
 ```bash
-bash runs/experiment_eta.sh
+bash runs/compare_eta.sh
 ```
 
 These two isolated prototypes use only the native signed eta histogram, its
@@ -135,19 +141,21 @@ in-range count and saved PU. Both use the same 16,384 Good TRAIN parents;
 4,096 Good monitoring LS and separate Good calibration runs keep their roles.
 The calibration has 42,192 usable eta LS (six empty observations are masked).
 
-- **Hypothesis:** four TRAIN-PU strata learn regional beta-binomial references.
+- **07 — Beta-binomial eta-loss model:** a statistical count model, not a
+  neural network. Four TRAIN-PU strata learn regional beta-binomial references.
   Central `|eta| < 0.9` and forward `|eta| > 1.2` loss hypotheses produce a
   profile likelihood-ratio score. Fitted loss is a reference-relative shape
   parameter, not a measured detector efficiency or a p-value.
-- **Classifier:** native fractions + log1p(N) + PU, `102 → 64 → 16 → 1`.
+- **08 — Synthetic-fault MLP classifier:** native fractions + log1p(N) + PU,
+  `102 → 64 → 16 → 1`. It predicts a fault score, not a reconstructed histogram.
   Good-derived normal/fault pairs have identical N and PU. Central/forward
   losses of 25–95% are simulated; fixed monitoring-pair BCE selects the epoch.
   Softplus(logit) preserves score tails; it is not a Bad probability.
 
 | Prototype | Good flagged, no 2026C | Bad flagged | MMD misses recovered | 1% thinning Good flagged |
 |---|---:|---:|---:|---:|
-| Hypothesis | 2.51% | 2579/2580 | 128/129 | 3.39% |
-| Classifier | 3.95% | 2580/2580 | 129/129 | 61.72% |
+| `07_eta_betabinomial` | 2.51% | 2579/2580 | 128/129 | 3.39% |
+| `08_eta_fault_classifier` | 3.95% | 2580/2580 | 129/129 | 61.72% |
 
 The hypothesis prototype retains every MMD Bad flag; its one miss is
 Run 396153 / LS1 with one observed muon. The classifier also flags uncertain
@@ -163,12 +171,19 @@ independent detector-fault truth. These Test runs were previously inspected;
 no settings were selected from the new Bad results. Existing experiments and
 production defaults are unchanged.
 
-Artifacts are under `output/{model,predict,plots}/experiments/eta_hypothesis/`
-and `eta_classifier/`; the summary is
-`output/predict/experiments/eta_comparison.json`. The classifier alone has a
-training loss curve. `output/plots/experiments/eta_power.png` shows synthetic
-fault sensitivity alongside normal false flags. These prototypes are run by
-this recipe rather than the production model registry.
+Each model now has its own directory alongside the other models:
+
+```text
+output/model/07_eta_betabinomial/model.json
+output/model/08_eta_fault_classifier/model.pt
+output/predict/{07_eta_betabinomial,08_eta_fault_classifier}/
+output/plots/{07_eta_betabinomial,08_eta_fault_classifier}/
+```
+
+The comparison summary is `output/predict/eta_comparison.json`; the shared
+synthetic sensitivity figure is `output/plots/eta_power.png`. Only model 08
+has a training loss curve. Both use the dedicated `compare_eta.sh` recipe;
+existing core models and defaults are unchanged.
 
 ## Workflow
 
@@ -188,7 +203,7 @@ bash runs/plotting/scores.sh --input output/predict/06_ae_kde_mmd
 bash runs/plotting/mes.sh
 ```
 
-Use the same recipes with another model ID. Compatible checkpoints are reused;
+Use the same recipes with another core model ID (01–06). Compatible checkpoints are reused;
 existing predictions are protected. Use a separate `--output` for a new study.
 Model commands never fetch or regenerate DIALS data. MDN training uses Apple
 MPS when available; saved checkpoints support CPU prediction.
@@ -199,7 +214,7 @@ MPS when available; saved checkpoints support CPU prediction.
 scripts/
   data/                 DIALS cache and annual DCS/OMS/RR access
   models/
-    config.py           paths, MEs and retained experiment IDs
+    config.py           paths, MEs and core train/predict model IDs
     preprocessing.py    representations, PU alignment and selections
     gaussian.py         weighted Gaussian fitting and bin probabilities
     shared_gaussian.py  fixed shapes, LS weights and raw-bin residuals
@@ -207,25 +222,24 @@ scripts/
     kde_scores.py       count-corrected MMD and Good-monitor ranks
     networks.py         conditional AE and MDN
     core.py             calibration, scoring and checkpoint I/O
-    model_0*.py         experiment definitions
-    eta_*.py            isolated hypothesis/classifier prototypes
+    model_0*.py         numbered per-model implementations
   train.py              fit and calibrate
   predict.py            saved model → LS scores
   compare_mmd.py        frozen MMD top-1/2/3 scoring comparison
-  experiment_eta.py     two eta-only experiments and diagnostics
+  compare_eta.py        compare model 07 (statistics) and 08 (MLP)
   plotting/             ME, score, loss and confusion-matrix plots
 runs/
   data/                 metadata and DIALS recipes
   train.sh              MODEL → checkpoint
   predict.sh            checkpoint + cache → predictions
   compare_mmd.sh        rescore cached MMD terms and check low-statistics robustness
-  experiment_eta.sh     run the isolated eta-only prototypes
+  compare_eta.sh        run models 07/08 with the same frozen eta data
   plotting/             saved data/predictions → figures
 data/
   dials/<dataset>/<run>/ cached ME Parquet files
   {dcs,oms,rr}/<year>.json
 output/
-  model/<ID>/           checkpoint, scaling and fixed threshold
+  model/<ID>/           fitted parameters/checkpoint and fixed threshold
   predict/<ID>/         scores.parquet and metrics.json
   plots/{mes,<ID>}/     figures
 ```

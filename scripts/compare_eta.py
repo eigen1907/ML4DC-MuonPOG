@@ -1,4 +1,4 @@
-"""Two eta-only prototypes; frozen data splits, no production-model changes."""
+"""Compare models 07 (beta-binomial eta loss) and 08 (eta fault MLP)."""
 
 import hashlib
 import json
@@ -15,8 +15,8 @@ from scripts.compare_mmd import evaluation, load_stress_sample
 from scripts.data.dials import _integers
 from scripts.models.config import DIALS, FEATURE_AE, IDS, KDE_MMD_AE, OUT, SEED, SPECIAL_RUNS, dials_folder
 from scripts.models.core import QUANTILE, load_checkpoint
-from scripts.models.eta_classifier import fit_classifier, predict_classifier
-from scripts.models.eta_hypothesis import fit_reference, score as hypothesis_score
+from scripts.models.model_08_eta_fault_classifier import NAME as CLASSIFIER, fit_classifier, predict_classifier
+from scripts.models.model_07_eta_betabinomial import NAME as HYPOTHESIS, fit_reference, score as hypothesis_score
 from scripts.models.preprocessing import MONITOR_LIMIT
 from scripts.plotting.scores import plot_stage, save
 
@@ -91,7 +91,7 @@ def publish(name, source, values, calibration, references, model_path, details=N
             for key, output in [('region_scores', 'score'), ('observed_fraction', 'observed'),
                                 ('normal_probability', 'expected'), ('efficiency_loss', 'loss')]:
                 scores[f'{label}_{output}'] = details[key][:, region]
-    folder = OUT/'predict'/'experiments'/name
+    folder = OUT/'predict'/name
     folder.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(folder/'scores.parquet', index=False)
     metrics = dict(experiment=name, threshold=cut, quantile=QUANTILE, input='eta-only native histogram',
@@ -100,7 +100,7 @@ def publish(name, source, values, calibration, references, model_path, details=N
                                     tied_at_threshold=int((selected == cut).sum())),
                    evaluation=report(scores, cut, references))
     (folder/'metrics.json').write_text(json.dumps(metrics, indent=2)+'\n')
-    plot_stage(scores, history, cut, OUT/'plots'/'experiments'/name)
+    plot_stage(scores, history, cut, OUT/'plots'/name)
     print('RESULT', name, json.dumps(metrics['evaluation']['no2026C']), flush=True)
     return cut, metrics
 
@@ -141,7 +141,7 @@ def synthetic_power(counts, pu, frame, axis, classifier, scorers):
 def power_plot(rows):
     hep.style.use('CMS')
     fig, axes = plt.subplots(1, 2, figsize=(15, 6), layout='constrained')
-    for ax, (name, label) in zip(axes, [('eta_hypothesis', 'Hypothesis'), ('eta_classifier', 'Classifier')]):
+    for ax, (name, label) in zip(axes, [(HYPOTHESIS, '07 Beta-binomial'), (CLASSIFIER, '08 MLP classifier')]):
         for region, color in [('central', 'tab:blue'), ('forward', 'tab:orange')]:
             selected = [row for row in rows if row['region']==region and row['loss']==.95]
             ax.plot([row['n'] for row in selected], [row['models'][name]['fault_flagged'] for row in selected],
@@ -152,17 +152,17 @@ def power_plot(rows):
         ax.text(.04, .86, label, transform=ax.transAxes, va='top')
         ax.legend(loc='lower right')
     hep.cms.label(ax=axes[0], text='Work in Progress', data=False, com=None, rlabel='')
-    save(fig, OUT/'plots'/'experiments'/'eta_power.png')
+    save(fig, OUT/'plots'/'eta_power.png')
 
 
 def main():
     torch.set_num_threads(2)
     torch.set_num_interop_threads(1)
     torch.use_deterministic_algorithms(True)
-    names = ['eta_hypothesis', 'eta_classifier']
+    names = [HYPOTHESIS, CLASSIFIER]
     for name in names:
         for area in ['model', 'predict', 'plots']:
-            if (OUT/area/'experiments'/name).exists():
+            if (OUT/area/name).exists():
                 raise FileExistsError(f'Experimental output already exists: {area}/{name}')
     _, anchor, _ = load_checkpoint(OUT/'model'/KDE_MMD_AE)
     source = pd.read_parquet(OUT/'predict'/KDE_MMD_AE/'scores.parquet').reset_index(drop=True)
@@ -196,9 +196,9 @@ def main():
                      source_signature=anchor['signature'], scope='eta-only experimental prototypes')
     reference = fit_reference(counts, axis['edges'], train_mask, pileup=pu)
     result = hypothesis_score(counts, reference, pileup=pu)
-    model_path = OUT/'model'/'experiments'/'eta_hypothesis'/'model.json'
+    model_path = OUT/'model'/HYPOTHESIS/'model.json'
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    hcut, hmetrics = publish('eta_hypothesis', source, result['score'], calibration, references,
+    hcut, hmetrics = publish(HYPOTHESIS, source, result['score'], calibration, references,
                              model_path, details=result)
     reference.update(threshold=hcut, quantile=QUANTILE, selection=selection)
     model_path.write_text(json.dumps(reference, indent=2)+'\n')
@@ -208,15 +208,15 @@ def main():
     history = dict(train=[row['train_loss'] for row in classifier['history']],
                    validation=[row['monitor_loss'] for row in classifier['history']],
                    best_epoch=classifier['best_epoch'], training_years=[2024, 2025])
-    model_path = OUT/'model'/'experiments'/'eta_classifier'/'model.pt'
+    model_path = OUT/'model'/CLASSIFIER/'model.pt'
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    ccut, cmetrics = publish('eta_classifier', source, values, calibration, references,
+    ccut, cmetrics = publish(CLASSIFIER, source, values, calibration, references,
                              model_path, history=history)
     classifier.update(threshold=ccut, quantile=QUANTILE, selection=selection,
                       score='softplus(logit), ranking only')
     torch.save(classifier, model_path)
-    scorers = dict(eta_hypothesis=(lambda h, p: hypothesis_score(h, reference, p)['score'], hcut),
-                   eta_classifier=(lambda h, p: classifier_score(h, p, classifier), ccut))
+    scorers = {HYPOTHESIS: (lambda h, p: hypothesis_score(h, reference, p)['score'], hcut),
+               CLASSIFIER: (lambda h, p: classifier_score(h, p, classifier), ccut)}
     sample = load_stress_sample(anchor, source, DIALS)
     eta_index = next(i for i, name in enumerate(sample['me_names']) if name.endswith('__GlbMuon_Glb_eta'))
     stress = []
@@ -250,13 +250,13 @@ def main():
              'Synthetic power uses 64 held-out Good-Test 2024/25 templates; left/right are unseen families.',
              'Synthetic histograms and marginal thinning do not preserve event-level cross-ME correlations.',
              'Scores are neither calibrated detector-failure probabilities nor valid p-values.']
-    results = dict(eta_hypothesis=hmetrics, eta_classifier=cmetrics)
+    results = {HYPOTHESIS: hmetrics, CLASSIFIER: cmetrics}
     for name, metrics in results.items():
         metrics.update(selection=selection, notes=notes, low_statistics_stress=stress,
                        synthetic_power=power)
-        (OUT/'predict'/'experiments'/name/'metrics.json').write_text(json.dumps(metrics, indent=2)+'\n')
+        (OUT/'predict'/name/'metrics.json').write_text(json.dumps(metrics, indent=2)+'\n')
     summary = dict(results=results, selection=selection, notes=notes)
-    (OUT/'predict'/'experiments'/'eta_comparison.json').write_text(json.dumps(summary, indent=2)+'\n')
+    (OUT/'predict'/'eta_comparison.json').write_text(json.dumps(summary, indent=2)+'\n')
     print('Completed both eta-only experiments.', flush=True)
 
 

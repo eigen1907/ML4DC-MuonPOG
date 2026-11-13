@@ -224,7 +224,8 @@ def main():
     if scores.duplicated(IDS).any():
         raise ValueError("Duplicate dataset/run/LS rows across prediction directories")
     checkpoint = args.checkpoint
-    if checkpoint is None and candidates[0].exists():
+    # Standalone eta models carry their own parameter format, outside core I/O.
+    if checkpoint is None and candidates[0].exists() and not metrics.get('experimental_model'):
         checkpoint = candidates[0]
     history = history_for(checkpoint) if checkpoint is not None else None
     output = args.output or OUT / "plots" / args.input[0].name

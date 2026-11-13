@@ -1,4 +1,4 @@
-"""Exploratory eta acceptance-loss likelihoods, fitted on Good TRAIN LS only.
+"""Model 07: beta-binomial eta-loss likelihoods fitted on Good TRAIN LS only.
 
 Two predeclared regions use native-bin centres: |eta| < 0.9 and |eta| > 1.2.
 Each LS supplies a regional count k and in-range total N. A beta-binomial
@@ -15,6 +15,7 @@ from scipy.special import betaln, xlogy
 
 REGIONS = ('central', 'forward')
 LOSSES = (0., .25, .5, .75, .95, .999)
+NAME = '07_eta_betabinomial'
 
 
 def _regions(edges):
@@ -95,7 +96,7 @@ def fit_reference(counts, edges, train_mask, pileup=None):
     n = total[selected]
     regional = np.column_stack([counts[selected][:, mask].sum(1, dtype=float)
                                 for mask in masks.T])
-    reference = dict(edges=np.asarray(edges, dtype=float).tolist(), regions=list(REGIONS),
+    reference = dict(experiment=NAME, edges=np.asarray(edges, dtype=float).tolist(), regions=list(REGIONS),
                      losses=list(LOSSES), **_fit_parameters(regional, n))
     if pileup is not None:
         pu = pileup[selected]

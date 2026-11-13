@@ -2,4 +2,4 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-exec uv run --locked python -u -m scripts.experiment_eta
+exec uv run --locked python -u -m scripts.compare_eta
