@@ -36,12 +36,14 @@ PILEUP_AE = "02_ae_2feat_pileup"
 GMM_AE = "03_ae_gmm"
 MDN = "04_mdn"
 SHARED_GMM_AE = "05_ae_gmm_shared"
+SHARED_GMM32_AE = "06_ae_gmm_shared32"
 EXPERIMENTS = {
     FEATURE_AE: "Mean/std AE trained on Good DCS-pass LS; no entry cut",
     PILEUP_AE: "Mean/std AE conditioned on OMS pile-up; pile-up is not reconstructed",
     GMM_AE: "Per-LS Gaussian-mixture histogram fits followed by a pile-up-conditioned AE",
     MDN: "Pile-up-conditioned Gaussian-mixture histogram density network",
     SHARED_GMM_AE: "Fixed Good-training Gaussian shapes, LS mixture weights and a conditional AE",
+    SHARED_GMM32_AE: "32 fixed Gaussians per ME; otherwise the same shared-Gaussian experiment",
 }
 
 
