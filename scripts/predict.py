@@ -32,6 +32,8 @@ def predict_terms(spec, saved, dataset):
     if 'pileup' not in dataset:
         dataset['pileup'] = load_pileup(dataset['frame'])
     settings = saved['settings']
+    if spec.KIND == 'shared_gmm' and settings['score'] != 'variance_residual':
+        raise ValueError('Unknown shared-Gaussian score in checkpoint')
     conditions, _, available = condition_values(
         dataset['pileup'], scaler=saved['condition_scaler'],
         transform=settings.get('condition_transform', 'linear'))
@@ -46,7 +48,8 @@ def predict_terms(spec, saved, dataset):
             raise ValueError('Checkpoint bin counts differ from the input')
         inputs, _ = prepare(dataset, scaler=saved['hist_scaler'])
     else:
-        features, mask, feature_me, names = model_features(dataset, spec, settings)
+        features, mask, feature_me, names = model_features(dataset, spec, settings,
+                                                         basis=saved.get('basis'))
         if list(names) != saved['features'] or not np.array_equal(feature_me, saved['feature_me']):
             raise ValueError('Checkpoint feature names/order differ from the input')
         mask = np.asarray(mask, dtype=bool)
@@ -65,6 +68,14 @@ def predict_terms(spec, saved, dataset):
             if spec.KIND == 'mdn':
                 result = histogram_scores(prediction, [h[selected] for h in dataset['histograms']])
                 terms[selected] = result[settings.get('score', 'deviance')].numpy()
+            elif spec.KIND == 'shared_gmm':
+                from scripts.models.shared_gaussian import decode_weights, histogram_terms
+
+                weights = saved['scaler'].inverse_transform(prediction.numpy())
+                probabilities = decode_weights(weights, saved['basis'])
+                terms[selected] = histogram_terms(
+                    [h[selected] for h in dataset['histograms']], probabilities,
+                    saved['bin_variance'], saved['probability_floor'])
             else:
                 errors = (prediction.numpy() - inputs[selected].numpy()) ** 2
                 for me in range(n_mes):

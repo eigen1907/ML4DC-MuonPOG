@@ -97,13 +97,26 @@ def fit_conditioned(dataset, context, spec, settings=None):
                  condition_digest=signature['pileup_sha256'],
                  me_names=dataset['me_names'], axes=dataset['axes'],
                  run_split=dataset['run_split'], experiment=spec.NAME)
+    if spec.KIND == 'shared_gmm':
+        from scripts.models.shared_gaussian import fit_basis, training_variance
+
+        basis_train = np.zeros(len(frame), dtype=bool)
+        basis_train[train[available[train]]] = True
+        saved['basis'] = fit_basis(dataset['histograms'], dataset['axes'], basis_train,
+                                  components=settings['components'],
+                                  iterations=settings['basis_iterations'])
+        saved['bin_variance'] = training_variance(dataset['histograms'], basis_train)
+        saved['probability_floor'] = [
+            .5 / (dataset['totals'][basis_train, me].sum(dtype=np.float64) + .5 * h.shape[1])
+            for me, h in enumerate(dataset['histograms'])]
     if is_histogram:
         histograms, totals = _histograms(dataset)
         available &= (totals > 0).any(1)
         dimensions = [h.shape[1] for h in histograms]
         saved['bin_sizes'] = tuple(dimensions)
     else:
-        features, mask, feature_me, names = model_features(dataset, spec, settings)
+        features, mask, feature_me, names = model_features(dataset, spec, settings,
+                                                         basis=saved.get('basis'))
         features, mask = np.asarray(features, dtype=np.float32), np.asarray(mask, dtype=bool)
         if features.shape != mask.shape or len(features) != len(frame):
             raise ValueError('Expected aligned feature values and validity flags')

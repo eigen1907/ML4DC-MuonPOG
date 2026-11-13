@@ -1,5 +1,6 @@
 """Shared moments, histogram inputs and training-only reference selections."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -156,13 +157,31 @@ def condition_values(raw, train_mask=None, scaler=None, transform='linear'):
     return torch.from_numpy(values), scaler, valid
 
 
-def model_features(dataset, spec, settings):
+def model_features(dataset, spec, settings, basis=None):
     """Return targets, observation masks and the ME owning each feature."""
     if spec.KIND == 'conditional':
         values = np.asarray(dataset['features'], dtype=np.float32)
         return values, np.ones_like(values, dtype=bool), np.repeat(
             np.arange(len(dataset['me_names'])), 2), [
             f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
+    if spec.KIND == 'shared_gmm':
+        from scripts.models.shared_gaussian import fit_weights
+
+        if basis is None:
+            raise ValueError('Shared Gaussian features require a trained fixed basis')
+        digest = hashlib.sha256()
+        for item in basis:
+            digest.update(np.asarray(item['weights'], dtype='<f8').tobytes())
+            digest.update(np.asarray(item['probabilities'], dtype='<f8').tobytes())
+        key = (digest.hexdigest(), settings['prior_strength'], settings['weight_iterations'])
+        cached = dataset.get('_shared_gmm_cache')
+        if cached is None or cached[0] != key:
+            result = fit_weights(dataset['histograms'], basis,
+                                 prior_strength=key[1], iterations=key[2])
+            dataset['_shared_gmm_cache'] = (key, result)
+        result = dataset['_shared_gmm_cache'][1]
+        owner = result['feature_me']
+        return result['features'], result['valid'][:, owner], owner, result['feature_names']
     if spec.KIND != 'gmm':
         raise ValueError('Feature targets are only defined for moment and GMM AEs')
     from scripts.models.gaussian import fit_mixtures
