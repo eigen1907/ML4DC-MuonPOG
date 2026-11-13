@@ -136,7 +136,7 @@ def confusion_view(frame, threshold, path, *, label="Test"):
         for column in range(2):
             percent = f"{fractions[row, column]:.1%}" if totals[row, 0] else "n/a"
             ax.text(column, row, f"{counts[row, column]:,}\n{percent}", ha="center", va="center",
-                    color="white" if fractions[row, column] > .5 else "black")
+                    color="white" if fractions[row, column] > .6 else "black")
     ax.set(xticks=[0, 1], xticklabels=["Not flagged", "Flagged"],
            yticks=[0, 1], yticklabels=["Good", "Bad"])
     ax.tick_params(which="both", length=0)
