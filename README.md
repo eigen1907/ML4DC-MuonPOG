@@ -124,6 +124,52 @@ Checkpoints, scores and plots are nested under each area's
 `output/predict/06_ae_kde_mmd/topn.json`; the shared AE loss stays in the parent
 plot folder. No extra model definitions or training jobs are needed.
 
+## Eta-only experiments
+
+```bash
+bash runs/experiment_eta.sh
+```
+
+These two isolated prototypes use only the native signed eta histogram, its
+in-range count and saved PU. Both use the same 16,384 Good TRAIN parents;
+4,096 Good monitoring LS and separate Good calibration runs keep their roles.
+The calibration has 42,192 usable eta LS (six empty observations are masked).
+
+- **Hypothesis:** four TRAIN-PU strata learn regional beta-binomial references.
+  Central `|eta| < 0.9` and forward `|eta| > 1.2` loss hypotheses produce a
+  profile likelihood-ratio score. Fitted loss is a reference-relative shape
+  parameter, not a measured detector efficiency or a p-value.
+- **Classifier:** native fractions + log1p(N) + PU, `102 → 64 → 16 → 1`.
+  Good-derived normal/fault pairs have identical N and PU. Central/forward
+  losses of 25–95% are simulated; fixed monitoring-pair BCE selects the epoch.
+  Softplus(logit) preserves score tails; it is not a Bad probability.
+
+| Prototype | Good flagged, no 2026C | Bad flagged | MMD misses recovered | 1% thinning Good flagged |
+|---|---:|---:|---:|---:|
+| Hypothesis | 2.51% | 2579/2580 | 128/129 | 3.39% |
+| Classifier | 3.95% | 2580/2580 | 129/129 | 61.72% |
+
+The hypothesis prototype retains every MMD Bad flag; its one miss is
+Run 396153 / LS1 with one observed muon. The classifier also flags uncertain
+low-count normal samples, so its perfect Bad coverage is not a robust win.
+Both leave 38 empty-eta Good Test LS unscored, explicitly counted in metrics.
+Full-Test Good flags remain 28.48%/29.35%, so 2026C is still unresolved.
+The hypothesis has little sensitivity to unseen left/right eta losses;
+neither prototype is a general replacement for the eight-ME models.
+
+Synthetic diagnostics use 64 held-out Good-Test 2024/25 templates at fixed N
+and severity, including unseen left/right losses. They are simulations, not
+independent detector-fault truth. These Test runs were previously inspected;
+no settings were selected from the new Bad results. Existing experiments and
+production defaults are unchanged.
+
+Artifacts are under `output/{model,predict,plots}/experiments/eta_hypothesis/`
+and `eta_classifier/`; the summary is
+`output/predict/experiments/eta_comparison.json`. The classifier alone has a
+training loss curve. `output/plots/experiments/eta_power.png` shows synthetic
+fault sensitivity alongside normal false flags. These prototypes are run by
+this recipe rather than the production model registry.
+
 ## Workflow
 
 ```bash
@@ -162,15 +208,18 @@ scripts/
     networks.py         conditional AE and MDN
     core.py             calibration, scoring and checkpoint I/O
     model_0*.py         experiment definitions
+    eta_*.py            isolated hypothesis/classifier prototypes
   train.py              fit and calibrate
   predict.py            saved model → LS scores
   compare_mmd.py        frozen MMD top-1/2/3 scoring comparison
+  experiment_eta.py     two eta-only experiments and diagnostics
   plotting/             ME, score, loss and confusion-matrix plots
 runs/
   data/                 metadata and DIALS recipes
   train.sh              MODEL → checkpoint
   predict.sh            checkpoint + cache → predictions
   compare_mmd.sh        rescore cached MMD terms and check low-statistics robustness
+  experiment_eta.sh     run the isolated eta-only prototypes
   plotting/             saved data/predictions → figures
 data/
   dials/<dataset>/<run>/ cached ME Parquet files
