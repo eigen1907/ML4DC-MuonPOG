@@ -81,9 +81,9 @@ def score_values(terms, saved):
     reference = saved.get('score_calibration')
     if reference is None:
         return mean_score(terms)
-    from scripts.models.kde_scores import ecdf_terms
+    from scripts.models.kde_scores import ecdf_terms, top_mean_score
 
-    return mean_score(ecdf_terms(terms, reference))
+    return top_mean_score(ecdf_terms(terms, reference), saved['settings'].get('mmd_top_n'))
 
 
 def feature_terms(features, saved):

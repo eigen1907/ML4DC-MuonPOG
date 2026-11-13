@@ -2,8 +2,8 @@
 
 These helpers leave the trained model and its default score unchanged. Fit the
 ME ECDFs on Good monitoring LS, then use the separate Good calibration LS to
-set the mean rank-score threshold on separate Good calibration LS. Neither
-reference fitting nor threshold selection should use Test LS.
+set the aggregated rank-score threshold. Neither reference fitting nor
+threshold selection should use Test LS.
 """
 
 import numpy as np
@@ -50,6 +50,31 @@ def ecdf_terms(terms, reference):
         rank = np.searchsorted(column, terms[valid, me], side='left')
         normalized[valid, me] = -np.log((len(column) + 1 - rank) / (len(column) + 1))
     return normalized
+
+
+def top_mean_score(terms, top_n=None):
+    """Average all observed MEs, or the largest top_n observed ME scores.
+
+    None preserves the original all-ME mean. Missing MEs are excluded; observed
+    zeros count normally. Fewer than top_n observations use all available MEs,
+    and an LS without observed MEs remains NaN.
+    """
+    terms = np.asarray(terms, dtype=float)
+    if terms.ndim != 2 or not terms.shape[1] or np.isinf(terms).any():
+        raise ValueError('Expected finite or missing LS-by-ME scores')
+    valid = np.isfinite(terms)
+    count = valid.sum(1)
+    if top_n is None:
+        total = np.where(valid, terms, 0).sum(1)
+    else:
+        if (isinstance(top_n, (bool, np.bool_))
+                or not isinstance(top_n, (int, np.integer))
+                or not 1 <= top_n <= terms.shape[1]):
+            raise ValueError('top_n must be an integer from 1 to the number of MEs')
+        selected = np.sort(np.where(valid, terms, -np.inf), axis=1)[:, -int(top_n):]
+        total = np.where(np.isfinite(selected), selected, 0).sum(1)
+        count = np.minimum(count, top_n)
+    return np.divide(total, count, out=np.full(len(terms), np.nan), where=count > 0)
 
 
 def mmd_kernels(axes, bin_sizes, bandwidth_bins=(1., 4., 16.)):

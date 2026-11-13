@@ -249,8 +249,12 @@ def check_compatible(spec, saved, dataset, context):
     if spec.KIND == 'feature':
         if saved.get('features') != context['features']:
             raise ValueError('Feature layout changed; choose a separate --output directory')
-    elif saved.get('settings') != spec.SETTINGS:
-        raise ValueError('Model settings changed; choose a separate --output directory')
+    else:
+        settings = dict(saved.get('settings', {}))
+        if spec.NAME == KDE_MMD_AE:
+            settings.setdefault('mmd_top_n', None)  # Earlier mean-score checkpoints.
+        if settings != spec.SETTINGS:
+            raise ValueError('Model settings changed; choose a separate --output directory')
 
 
 def fit_mmd(dataset, context, spec):
