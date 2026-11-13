@@ -1,6 +1,10 @@
 """Shared moments, histogram inputs and training-only reference selections."""
 
+import json
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import torch
 
@@ -101,3 +105,76 @@ def training_context(dataset):
     features = [f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
     return dict(frame=frame, train=train, monitor_indices=fit_monitor,
                 calibration=calibration, signature=signature, features=features)
+
+
+def load_pileup(frame):
+    """Join annual OMS by physical run/LS; missing observations remain NaN."""
+    values = np.full(len(frame), np.nan, dtype=np.float64)
+    years = frame.dataset.str.extract(r'/Run(20\d\d)', expand=False)
+    for year in sorted(years.dropna().unique()):
+        path = Path('data/oms') / f'{year}.json'
+        if not path.is_file():
+            continue
+        rows = json.loads(path.read_text()).get('lumisections', [])
+        wanted = set(frame.loc[years.eq(year), 'run_number'])
+        triples = [(r['run_number'], r['lumisection_number'], r.get('pileup'))
+                   for r in rows if r['run_number'] in wanted]
+        del rows
+        if not triples:
+            continue
+        table = pd.DataFrame(triples, columns=['run_number', 'ls_number', 'pileup'])
+        if table.duplicated(['run_number', 'ls_number']).any():
+            raise ValueError(f'Duplicate OMS run/LS rows: {path}')
+        table['pileup'] = pd.to_numeric(table.pileup, errors='coerce')
+        selected = years.eq(year).to_numpy()
+        joined = frame.loc[selected, ['run_number', 'ls_number']].merge(
+            table, on=['run_number', 'ls_number'], how='left', sort=False,
+            validate='many_to_one')
+        values[selected] = joined.pileup.to_numpy(dtype=float, na_value=np.nan)
+    values[~np.isfinite(values) | (values < 0)] = np.nan
+    return values
+
+
+def condition_values(raw, train_mask=None, scaler=None, transform='linear'):
+    """Fit pile-up scaling on known training LS; never impute missing PU as data."""
+    raw = np.asarray(raw, dtype=np.float64)
+    if raw.ndim != 1:
+        raise ValueError('Expected one pile-up value per LS')
+    valid = np.isfinite(raw) & (raw >= 0)
+    values = np.zeros((len(raw), 1), dtype=np.float32)
+    if transform not in ('linear', 'log1p'):
+        raise ValueError('Expected linear or log1p pile-up condition')
+    values[valid, 0] = np.log1p(raw[valid]) if transform == 'log1p' else raw[valid]
+    if scaler is None:
+        rows = _rows(train_mask, len(raw))
+        rows = rows[valid[rows]]
+        if not len(rows):
+            raise ValueError('No training LS with valid OMS pile-up')
+        scaler = StandardScaler().fit(values[rows])
+    if valid.any():
+        values[valid] = scaler.transform(values[valid])
+    return torch.from_numpy(values), scaler, valid
+
+
+def model_features(dataset, spec, settings):
+    """Return targets, observation masks and the ME owning each feature."""
+    if spec.KIND == 'conditional':
+        values = np.asarray(dataset['features'], dtype=np.float32)
+        return values, np.ones_like(values, dtype=bool), np.repeat(
+            np.arange(len(dataset['me_names'])), 2), [
+            f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
+    if spec.KIND != 'gmm':
+        raise ValueError('Feature targets are only defined for moment and GMM AEs')
+    from scripts.models.gaussian import fit_mixtures
+
+    key = (settings['components'], settings.get('gmm_iterations', 20),
+           settings.get('gmm_scale_floor_bins', 12**-.5), settings.get('gmm_pseudocount', .5))
+    cache = dataset.setdefault('_gmm_cache', {})
+    if key not in cache:
+        result = fit_mixtures(dataset['histograms'], dataset['axes'], components=key[0],
+                              iterations=key[1], scale_floor_bins=key[2], pseudocount=key[3])
+        cache.clear()
+        cache[key] = {name: result[name] for name in ('features', 'valid', 'feature_me', 'feature_names')}
+    result = cache[key]
+    owner = result['feature_me']
+    return result['features'], result['valid'][:, owner], owner, result['feature_names']

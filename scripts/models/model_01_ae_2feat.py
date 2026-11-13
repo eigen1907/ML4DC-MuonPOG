@@ -7,7 +7,6 @@ from scripts.models.core import FEATURE_EPOCHS, BATCH_SIZE, HIDDEN_LAYERS
 
 NAME = FEATURE_AE
 KIND = 'feature'
-DISTRIBUTION = SCORE = SOURCE = WINDOW = None
 
 
 def build_model():

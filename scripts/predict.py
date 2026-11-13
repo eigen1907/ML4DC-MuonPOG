@@ -11,34 +11,69 @@ import torch
 
 from scripts.models.config import EXPERIMENTS, OUT
 from scripts.data.dials import load_dataset
-from scripts.models.core import (QUANTILE, feature_terms, histogram_terms, load_checkpoint,
-                                 mean_score, model_spec, restore_model, threshold_for, window_mean)
-from scripts.models.preprocessing import prepare
+from scripts.models.core import (QUANTILE, feature_terms, load_checkpoint,
+                                 mean_score, restore_model, threshold_for)
+from scripts.models.networks import histogram_scores
+from scripts.models.preprocessing import condition_values, load_pileup, model_features, prepare
 
 
 def predict_terms(spec, saved, dataset):
-    """Reconstruct with saved scaling; never fit a scaler or recalibrate a cut."""
-    if spec.KIND == 'window':
-        terms, values = predict_terms(model_spec(spec.SOURCE), saved, dataset)
-        frame = dataset['frame'].copy()
-        frame['anomaly_score'] = mean_score(terms) if values is None else values
-        values = window_mean(frame)
-        return values[:, None], values
+    """Saved scalers and conditions only; missing pile-up remains unscored."""
     if spec.KIND == 'feature':
         features = [f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
         if saved['features'] != features:
             raise ValueError('Checkpoint feature names/order differ from the input MEs')
         return feature_terms(dataset['features'], saved)
-    if (saved['me_names'] != dataset['me_names']
-            or tuple(saved['bin_sizes']) != tuple(hist.shape[1] for hist in dataset['histograms'])
-            or len(saved['axes']) != len(dataset['axes'])
+    if (saved['me_names'] != dataset['me_names'] or len(saved['axes']) != len(dataset['axes'])
             or any(not np.array_equal(old[key], current[key])
                    for old, current in zip(saved['axes'], dataset['axes'])
                    for key in ('low', 'high', 'edges'))):
-        raise ValueError('Checkpoint ME names, binning or axes differ from the input MEs')
-    inputs, _ = prepare(dataset, scaler=saved['scaler'])
+        raise ValueError('Checkpoint MEs or histogram axes differ from the input')
+    if 'pileup' not in dataset:
+        dataset['pileup'] = load_pileup(dataset['frame'])
+    settings = saved['settings']
+    conditions, _, available = condition_values(
+        dataset['pileup'], scaler=saved['condition_scaler'],
+        transform=settings.get('condition_transform', 'linear'))
+    conditions = torch.as_tensor(conditions, dtype=torch.float32)
     model = restore_model(spec, saved)
-    terms = histogram_terms(model, inputs, dataset['histograms'])[spec.SCORE]
+    n_mes, n_rows = len(dataset['me_names']), len(dataset['frame'])
+    terms = np.full((n_rows, n_mes), np.nan)
+    if not available.any():
+        return terms, None
+    if spec.KIND == 'mdn':
+        if tuple(saved['bin_sizes']) != tuple(h.shape[1] for h in dataset['histograms']):
+            raise ValueError('Checkpoint bin counts differ from the input')
+        inputs, _ = prepare(dataset, scaler=saved['hist_scaler'])
+    else:
+        features, mask, feature_me, names = model_features(dataset, spec, settings)
+        if list(names) != saved['features'] or not np.array_equal(feature_me, saved['feature_me']):
+            raise ValueError('Checkpoint feature names/order differ from the input')
+        mask = np.asarray(mask, dtype=bool)
+        scaled = saved['scaler'].transform(features)
+        inputs = torch.from_numpy(np.where(mask, scaled, 0).astype(np.float32))
+    inputs = torch.as_tensor(inputs, dtype=torch.float32)
+    if inputs.shape[1] != saved['input_dim']:
+        raise ValueError('Checkpoint input size differs from the prepared inputs')
+    rows = np.flatnonzero(available)
+    batch_size = int(settings.get('batch_size', 1024))
+    model.eval()
+    with torch.no_grad():
+        for first in range(0, len(rows), batch_size):
+            selected = rows[first:first + batch_size]
+            prediction = model(inputs[selected], conditions[selected])
+            if spec.KIND == 'mdn':
+                result = histogram_scores(prediction, [h[selected] for h in dataset['histograms']])
+                terms[selected] = result[settings.get('score', 'deviance')].numpy()
+            else:
+                errors = (prediction.numpy() - inputs[selected].numpy()) ** 2
+                for me in range(n_mes):
+                    columns = np.asarray(feature_me) == me
+                    observed = mask[selected][:, columns]
+                    counts = observed.sum(1)
+                    terms[selected, me] = np.divide(
+                        np.where(observed, errors[:, columns], 0).sum(1), counts,
+                        out=np.full(len(selected), np.nan), where=counts > 0)
     return terms, None
 
 
@@ -54,11 +89,13 @@ def predict(checkpoint, data, output=None, *, years=None, prompt_reco=False):
     scores = dataset['frame'].copy()
     for split, runs in saved.get('run_split', {}).items():
         scores.loc[scores.run_number.isin(runs), 'split'] = split
+    if spec.KIND != 'feature':
+        scores['pileup'] = np.asarray(dataset['pileup'], dtype=float)
+        scores['oms_available'] = np.isfinite(scores.pileup) & scores.pileup.ge(0)
     scores['anomaly_score'] = values
     for index in range(terms.shape[1]):
         scores[f'term_{index}'] = terms[:, index]
-    scores['flagged'] = pd.array(np.where(scores.dcs_pass & np.isfinite(values),
-                                         values > cut, None), dtype='boolean')
+    scores['flagged'] = pd.array(np.where(scores.dcs_pass & np.isfinite(values), values > cut, None), dtype='boolean')
     output.mkdir(parents=True, exist_ok=True)
     scores.to_parquet(output/'scores.parquet', index=False)
     metrics = dict(experiment=spec.NAME, threshold=cut, quantile=saved.get('quantile', QUANTILE),
@@ -66,6 +103,8 @@ def predict(checkpoint, data, output=None, *, years=None, prompt_reco=False):
                    description=EXPERIMENTS[spec.NAME], signature=saved.get('signature'),
                    years=sorted(scores.dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist()),
                    prompt_reco=prompt_reco)
+    if spec.KIND != 'feature':
+        metrics.update(settings=saved['settings'], oms_available_ls=int(scores.oms_available.sum()))
     (output/'metrics.json').write_text(json.dumps(metrics, indent=2)+'\n')
     print(f'Saved {len(scores):,} LS to {output}; fixed threshold = {cut:.6g}', flush=True)
     return scores

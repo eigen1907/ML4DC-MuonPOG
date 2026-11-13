@@ -1,9 +1,8 @@
-"""Fit one Muon autoencoder and save its calibrated checkpoint; no plots."""
+"""Fit one Muon model and save its Good-calibrated checkpoint; no plots."""
 
 import argparse
 import copy
-import json
-import os
+import hashlib
 from pathlib import Path
 import pickle
 
@@ -13,9 +12,12 @@ import torch
 
 from scripts.models.config import DIALS, EXPERIMENTS, OUT, SEED
 from scripts.data.dials import load_dataset
-from scripts.models.core import (FEATURE_EPOCHS, BATCH_SIZE, EPOCHS, HIDDEN_LAYERS,
-                                PATIENCE, QUANTILE, calibrate, load_checkpoint, loss, model_spec)
-from scripts.models.preprocessing import _histograms, _rows, prepare, training_context
+from scripts.models.core import (FEATURE_EPOCHS, BATCH_SIZE, HIDDEN_LAYERS,
+                                QUANTILE, calibrate, load_checkpoint, model_spec)
+from scripts.models.networks import histogram_loss
+from scripts.models.preprocessing import (_histograms, _rows, condition_values,
+                                           load_pileup, model_features, prepare,
+                                           training_context)
 
 
 def fit_feature(features, train_mask, monitor_indices, spec):
@@ -43,103 +45,181 @@ def fit_feature(features, train_mask, monitor_indices, spec):
             'validation_losses': history['validation']}
 
 
-def _monitor_loss(model, inputs, histograms, totals, indices, distribution):
-    model.eval()
-    total, weight = 0., 0
-    with torch.no_grad():
-        for first in range(0, len(indices), BATCH_SIZE):
-            rows = indices[first:first + BATCH_SIZE]
-            value = loss(model(inputs[rows]), [h[rows] for h in histograms], distribution)
-            n = int((totals[rows] > 0).any(axis=1).sum())
-            if value is not None:
-                total += float(value) * n
-                weight += n
-    if not weight:
-        raise ValueError('No nonempty monitoring LS')
-    return total / weight
+def training_signature(context, pileup):
+    """Hash the aligned PU snapshot as well as the existing frozen DQM cohort."""
+    raw = np.asarray(pileup, dtype=np.float64)
+    selected = np.asarray(context.get('signature_rows', np.ones(len(raw), dtype=bool)))
+    if raw.ndim != 1 or selected.dtype != bool or selected.shape != raw.shape:
+        raise ValueError('Expected one boolean signature flag per pile-up observation')
+    training = np.zeros(len(raw), dtype=bool)
+    training[_rows(context['train'], len(raw))] = True
+    if (training & ~selected).any():
+        raise ValueError('Training LS cannot be excluded from the model signature')
+    canonical = np.full(raw.shape, np.nan, dtype='<f8')
+    valid = np.isfinite(raw) & (raw >= 0)
+    canonical[valid] = raw[valid]
+    return dict(context['signature'],
+                pileup_sha256=hashlib.sha256(canonical[selected].tobytes()).hexdigest(),
+                fit_selection_sha256=hashlib.sha256(training[selected].tobytes()).hexdigest())
 
 
-def fit_histogram(dataset, inputs, train_mask, monitor_indices, spec):
-    """Matched K=1 training; the caller supplies Good training/monitoring LS."""
-    distribution = spec.DISTRIBUTION
-    histograms, totals = _histograms(dataset)
-    train, monitor = _rows(train_mask, len(totals)), _rows(monitor_indices, len(totals))
+def _feature_loss(predicted, observed, mask, feature_me, n_mes):
+    """Equal ME weights even when a periodic GMM representation has extra features."""
+    indices = feature_me[None, :].expand(len(observed), -1)
+    sums = observed.new_zeros((len(observed), n_mes)).scatter_add_(
+        1, indices, torch.where(mask, (predicted - observed).square(), 0))
+    counts = observed.new_zeros((len(observed), n_mes)).scatter_add_(1, indices, mask.to(observed.dtype))
+    valid = counts > 0
+    per_me = sums / counts.clamp_min(1)
+    per_ls = torch.where(valid, per_me, 0).sum(1) / valid.sum(1).clamp_min(1)
+    return per_ls[valid.any(1)].mean()
+
+
+def fit_conditioned(dataset, context, spec, settings=None):
+    """Fit one pile-up-only conditional model; tuning callers supply overrides.
+
+    Only Good training LS fit either scaler. Monitor runs select epochs; separate
+    calibration runs and Test are never used for fitting or early stopping.
+    """
+    settings = dict(spec.SETTINGS, **(settings or {}))
+    frame = dataset['frame']
+    if 'pileup' not in dataset:
+        dataset['pileup'] = load_pileup(frame)
+    raw = np.asarray(dataset['pileup'], dtype=float)
+    available = np.isfinite(raw) & (raw >= 0)
+    train = _rows(context['train'], len(frame))
+    monitor = _rows(context['monitor_indices'], len(frame))
     if np.intersect1d(train, monitor).size:
-        raise ValueError('Training and monitoring LS must be disjoint')
-    if not (totals[train] > 0).any():
-        raise ValueError('No nonempty training LS')
+        raise ValueError('Training and monitoring LS overlap')
+    is_histogram = spec.KIND == 'mdn'
+    signature = training_signature(context, raw)
+    saved = dict(settings=settings, signature=signature,
+                 condition_digest=signature['pileup_sha256'],
+                 me_names=dataset['me_names'], axes=dataset['axes'],
+                 run_split=dataset['run_split'], experiment=spec.NAME)
+    if is_histogram:
+        histograms, totals = _histograms(dataset)
+        available &= (totals > 0).any(1)
+        dimensions = [h.shape[1] for h in histograms]
+        saved['bin_sizes'] = tuple(dimensions)
+    else:
+        features, mask, feature_me, names = model_features(dataset, spec, settings)
+        features, mask = np.asarray(features, dtype=np.float32), np.asarray(mask, dtype=bool)
+        if features.shape != mask.shape or len(features) != len(frame):
+            raise ValueError('Expected aligned feature values and validity flags')
+        available &= mask.any(1)
+        dimensions = features.shape[1]
+        saved.update(feature_me=np.asarray(feature_me, dtype=int), features=list(names))
+    train, monitor = train[available[train]], monitor[available[monitor]]
+    if not len(train) or not len(monitor):
+        raise ValueError('No usable Good training/monitoring LS with measured OMS pile-up')
+    train_mask = np.zeros(len(frame), dtype=bool)
+    train_mask[train] = True
+    conditions, condition_scaler, _ = condition_values(
+        raw, train_mask=train_mask, transform=settings.get('condition_transform', 'linear'))
+    conditions = torch.as_tensor(conditions, dtype=torch.float32)
+    saved.update(condition_scaler=condition_scaler,
+                 training_ls=int(len(train)), monitoring_ls=int(len(monitor)),
+                 training_years=sorted(frame.iloc[train].dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist()),
+                 oms_available_ls=int((np.isfinite(raw) & (raw >= 0)).sum()))
+    if is_histogram:
+        inputs, hist_scaler = prepare(dataset, train_mask=train_mask)
+        saved['hist_scaler'] = hist_scaler
+    else:
+        if (mask[train].sum(0) == 0).any():
+            raise ValueError('A model feature has no observed Good training values')
+        scaler = StandardScaler().fit(np.where(mask[train], features[train], np.nan))
+        scaled = scaler.transform(features)
+        inputs = torch.from_numpy(np.where(mask, scaled, 0).astype(np.float32))
+        masks = torch.from_numpy(mask)
+        feature_me = torch.as_tensor(saved['feature_me'], dtype=torch.long)
+        saved['scaler'] = scaler
     inputs = torch.as_tensor(inputs, dtype=torch.float32)
-    expected = (len(totals), sum(h.shape[1] for h in histograms) + 2 * len(histograms))
-    if tuple(inputs.shape) != expected or not torch.isfinite(inputs).all():
-        raise ValueError('Invalid prepared histogram inputs')
+    saved['input_dim'] = inputs.shape[1]
     torch.manual_seed(SEED)
     rng = np.random.default_rng(SEED)
-    model = spec.build_model([h.shape[1] for h in histograms])
-    model.initialize_heads([h[train].sum(axis=0, dtype=np.float64) for h in histograms])
-    parameters = list(model.parameters())
-    groups = parameters if distribution == 'mse' else [
-        {'params': [p for p in parameters if p is not model.log_concentration]},
-        {'params': [model.log_concentration], 'lr': .01}]
-    optimizer = torch.optim.Adam(groups, lr=.001, eps=1e-12)
-    history = {'train': [], 'validation': [], 'best_epoch': 0,
-               'loss': 'MSE' if distribution == 'mse' else 'DM NLL'}
+    model = spec.build_model(dimensions, settings)
+    if is_histogram:
+        model.initialize_heads([h[train].sum(0, dtype=np.float64) for h in histograms])
+    device = torch.device('mps' if is_histogram and torch.backends.mps.is_available() else 'cpu')
+    model.to(device)
+    saved['training_device'] = str(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=settings.get('lr', .001),
+                                 weight_decay=settings.get('weight_decay', 1e-5))
+    batch_size = int(settings.get('batch_size', 1024))
+
+    def objective(rows):
+        predicted = model(inputs[rows].to(device), conditions[rows].to(device))
+        if is_histogram:
+            return histogram_loss(predicted, [h[rows] for h in histograms],
+                                  count_weighted=settings.get('count_weighted', False))
+        return _feature_loss(predicted, inputs[rows], masks[rows], feature_me, len(dataset['me_names']))
+
+    history = dict(train=[], validation=[], best_epoch=0,
+                   loss='Multinomial NLL' if is_histogram and settings.get('count_weighted', False)
+                   else 'Cross entropy' if is_histogram else 'ME-balanced MSE')
     best, state, stale = float('inf'), None, 0
-    for epoch in range(1, EPOCHS + 1):
+    for epoch in range(1, int(settings.get('epochs', 80)) + 1):
         model.train()
-        shuffled, total, weight = rng.permutation(train), 0., 0
-        for first in range(0, len(shuffled), BATCH_SIZE):
-            rows = shuffled[first:first + BATCH_SIZE]
+        total, weight = 0., 0
+        shuffled = rng.permutation(train)
+        for first in range(0, len(shuffled), batch_size):
+            rows = shuffled[first:first + batch_size]
             optimizer.zero_grad(set_to_none=True)
-            value = loss(model(inputs[rows]), [h[rows] for h in histograms], distribution)
+            value = objective(rows)
             if value is None:
                 continue
             if not torch.isfinite(value):
-                raise FloatingPointError(f'Nonfinite {distribution} training loss')
+                raise FloatingPointError('Nonfinite training loss')
             value.backward()
-            torch.nn.utils.clip_grad_norm_(parameters, 5.)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.)
             optimizer.step()
-            n = int((totals[rows] > 0).any(axis=1).sum())
-            total += float(value.detach()) * n
-            weight += n
-        checked = _monitor_loss(model, inputs, histograms, totals, monitor, distribution)
-        if not np.isfinite(checked):
-            raise FloatingPointError(f'Nonfinite {distribution} monitoring loss')
+            total += float(value.detach()) * len(rows)
+            weight += len(rows)
+        if not weight:
+            raise ValueError('No observed training LS')
+        model.eval()
+        checked, checked_weight = 0., 0
+        with torch.no_grad():
+            for first in range(0, len(monitor), batch_size):
+                rows = monitor[first:first + batch_size]
+                value = objective(rows)
+                if value is not None:
+                    checked += float(value) * len(rows)
+                    checked_weight += len(rows)
+        if not checked_weight or not np.isfinite(checked):
+            raise FloatingPointError('No finite monitoring loss')
+        checked /= checked_weight
         history['train'].append(total / weight)
         history['validation'].append(checked)
-        print(f'{distribution} epoch {epoch:02d}: train {total / weight:.7g}, monitor {checked:.7g}', flush=True)
+        print(f'{spec.KIND} epoch {epoch:02d}: train {total / weight:.7g}, monitor {checked:.7g}', flush=True)
         if checked < best * (1 - 1e-4):
             best, state, stale = checked, copy.deepcopy(model.state_dict()), 0
             history['best_epoch'] = epoch
         else:
             stale += 1
-            if stale >= PATIENCE:
+            if stale >= int(settings.get('patience', 8)):
                 break
     model.load_state_dict(state)
-    model.eval()
-    return model, history
+    saved.update(state_dict={key: value.detach().cpu() for key, value in model.state_dict().items()},
+                 history=history)
+    return saved
 
 
 def check_compatible(spec, saved, dataset, context):
-    """Never reuse a fit when its training cohort or histogram layout changed."""
-    if spec.KIND == 'window':
-        spec = model_spec(spec.SOURCE)
-    if saved.get('signature') != context['signature']:
-        raise ValueError('Training selection changed; choose a separate --output directory')
-    if spec.KIND == 'feature':
-        if saved.get('features') != context['features'] or saved.get('run_split') != dataset['run_split']:
-            raise ValueError('Run split or feature layout changed; choose a separate --output directory')
+    """Refuse a silent reuse after a training cohort, pile-up or settings change."""
+    expected = context['signature']
     if spec.KIND != 'feature':
-        _, scaler = prepare(dataset, context['train'])
-        same_axes = (len(saved['axes']) == len(dataset['axes']) and all(
-            np.array_equal(old[key], current[key])
-            for old, current in zip(saved['axes'], dataset['axes'])
-            for key in ('low', 'high', 'edges')))
-        if (saved['me_names'] != dataset['me_names']
-                or tuple(saved['bin_sizes']) != tuple(h.shape[1] for h in dataset['histograms'])
-                or not same_axes
-                or any(not np.array_equal(getattr(saved['scaler'], key), getattr(scaler, key))
-                       for key in ('mean_', 'scale_'))):
-            raise ValueError('ME layout, axes or training scaling changed; choose a separate --output directory')
+        if 'pileup' not in dataset:
+            dataset['pileup'] = load_pileup(dataset['frame'])
+        expected = training_signature(context, dataset['pileup'])
+    if saved.get('signature') != expected or saved.get('run_split') != dataset['run_split']:
+        raise ValueError('Training selection or OMS snapshot changed; choose a separate --output directory')
+    if spec.KIND == 'feature':
+        if saved.get('features') != context['features']:
+            raise ValueError('Feature layout changed; choose a separate --output directory')
+    elif saved.get('settings') != spec.SETTINGS:
+        raise ValueError('Model settings changed; choose a separate --output directory')
 
 
 def main():
@@ -147,17 +227,13 @@ def main():
     parser.add_argument('--model', required=True, choices=[f'model_{name}' for name in EXPERIMENTS])
     parser.add_argument('--data', type=Path, default=DIALS, help='Cached DIALS directory')
     parser.add_argument('--years', type=int, nargs='+', help='Use only these cached years; default: all')
-    parser.add_argument('--output', type=Path, help='Checkpoint directory; default: output/model/<model>')
-    parser.add_argument('--source', type=Path, help='Source checkpoint for a window experiment')
+    parser.add_argument('--output', type=Path, help='Checkpoint directory; existing fits are preserved')
     args = parser.parse_args()
     spec = model_spec(args.model)
-    if args.source and spec.KIND != 'window':
-        parser.error('--source is only used by window experiments')
     folder = args.output or OUT/'model'/spec.NAME
-    filename = 'source.json' if spec.KIND == 'window' else 'model.pkl' if spec.KIND == 'feature' else 'model.pt'
-    path = folder/filename
-    other = [folder/name for name in ('model.pkl', 'model.pt', 'source.json')
-             if name != filename and (folder/name).exists()]
+    path = folder/('model.pkl' if spec.KIND == 'feature' else 'model.pt')
+    other = [folder/name for name in ('model.pkl', 'model.pt')
+             if name != path.name and (folder/name).exists()]
     if other:
         raise ValueError(f'Another model already exists in {folder}; choose a separate --output directory')
     torch.set_num_threads(4)
@@ -172,35 +248,22 @@ def main():
         check_compatible(spec, saved, dataset, context)
         print(f'Compatible checkpoint preserved: {path}', flush=True)
         return
-    if spec.KIND == 'window':
-        source_spec, saved, source_file = load_checkpoint(args.source or OUT/'model'/spec.SOURCE)
-        if source_spec.NAME != spec.SOURCE:
-            raise ValueError(f'{spec.NAME} requires source model {spec.SOURCE}')
-        check_compatible(source_spec, saved, dataset, context)
-        saved = dict(saved, experiment=spec.NAME, window=spec.WINDOW, centered=True)
-    elif spec.KIND == 'feature':
+    if spec.KIND == 'feature':
         saved = fit_feature(dataset['features'], context['train'], context['monitor_indices'], spec)
+        saved.update(signature=context['signature'], features=context['features'])
     else:
-        inputs, scaler = prepare(dataset, context['train'])
-        model, history = fit_histogram(dataset, inputs, context['train'], context['monitor_indices'], spec)
-        saved = dict(state_dict=model.state_dict(), scaler=scaler, history=history, bin_sizes=model.bin_sizes)
-    saved.update(experiment=spec.NAME, signature=context['signature'], run_split=dataset['run_split'],
-                 features=context['features'], me_names=dataset['me_names'], axes=dataset['axes'],
-                 training_years=sorted(context['frame'].dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist()))
-    # Calibration is part of training; prediction only reuses this fixed cut.
+        saved = fit_conditioned(dataset, context, spec)
+    saved.update(experiment=spec.NAME, run_split=dataset['run_split'],
+                 me_names=dataset['me_names'], axes=dataset['axes'],
+                 training_years=saved.get('training_years', sorted(
+                     context['frame'].loc[context['train']].dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist())))
     from scripts.predict import predict_terms
     terms, values = predict_terms(spec, saved, dataset)
     _, threshold = calibrate(context['frame'], terms, context['calibration'], values)
     saved.update(threshold=threshold, quantile=QUANTILE)
     folder.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix('.tmp')
-    if spec.KIND == 'window':
-        pointer = dict(experiment=spec.NAME, source=os.path.relpath(source_file.resolve(), folder.resolve()),
-                       source_model=source_spec.NAME, window=spec.WINDOW, centered=True,
-                       threshold=threshold, quantile=QUANTILE, signature=context['signature'],
-                       run_split=dataset['run_split'], training_years=saved['training_years'])
-        temporary.write_text(json.dumps(pointer, indent=2)+'\n')
-    elif spec.KIND == 'feature':
+    if spec.KIND == 'feature':
         temporary.write_bytes(pickle.dumps(saved))
     else:
         torch.save(saved, temporary)
