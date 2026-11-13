@@ -71,11 +71,7 @@ def predict_terms(spec, saved, dataset):
     with torch.no_grad():
         for first in range(0, len(rows), batch_size):
             selected = rows[first:first + batch_size]
-            if settings.get('mask_me'):
-                observed = torch.as_tensor(np.asarray(dataset['totals'])[selected] > 0)
-                prediction = model.predict_heldout(inputs[selected], conditions[selected], observed)
-            else:
-                prediction = model(inputs[selected], conditions[selected])
+            prediction = model(inputs[selected], conditions[selected])
             if spec.KIND == 'mdn':
                 result = histogram_scores(prediction, [h[selected] for h in dataset['histograms']])
                 terms[selected] = result[settings.get('score', 'deviance')].numpy()

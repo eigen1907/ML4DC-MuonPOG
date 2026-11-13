@@ -36,16 +36,14 @@ PILEUP_AE = "02_ae_2feat_pileup"
 MDN = "04_mdn"
 SHARED_GMM_AE = "05_ae_gmm_shared"
 KDE_AE = "06_ae_kde"
-KDE_ADAPTIVE_AE = "07_ae_kde_adaptive"
-KDE_MASKED_AE = "08_ae_kde_masked"
+KDE_MMD_AE = "06_ae_kde_mmd"
 EXPERIMENTS = {
     FEATURE_AE: "Mean/std AE trained on Good DCS-pass LS; no entry cut",
     PILEUP_AE: "Mean/std AE conditioned on OMS pile-up; pile-up is not reconstructed",
     MDN: "Pile-up-conditioned Gaussian-mixture histogram density network",
     SHARED_GMM_AE: "30 fixed Good-training Gaussians per ME, LS weights and a conditional AE",
     KDE_AE: "Binned KDE histogram inputs and a pile-up-conditioned AE",
-    KDE_ADAPTIVE_AE: "Training-selected spatially adaptive KDE inputs and a conditional AE",
-    KDE_MASKED_AE: "Predict each held-out ME from the other KDE histograms and pile-up",
+    KDE_MMD_AE: "Reuse the KDE AE with count-corrected MMD shape scores",
 }
 
 

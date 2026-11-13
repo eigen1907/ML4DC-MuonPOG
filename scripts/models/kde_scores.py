@@ -1,8 +1,8 @@
-"""Optional KDE score studies; fit references on Good monitoring LS only.
+"""Count-corrected MMD scores and Good-monitor ME rank references.
 
 These helpers leave the trained model and its default score unchanged. Fit the
 ME ECDFs on Good monitoring LS, then use the separate Good calibration LS to
-set a threshold with core.calibrate(..., values=aggregate_terms(...)). Neither
+set the mean rank-score threshold on separate Good calibration LS. Neither
 reference fitting nor threshold selection should use Test LS.
 """
 
@@ -50,25 +50,6 @@ def ecdf_terms(terms, reference):
         rank = np.searchsorted(column, terms[valid, me], side='left')
         normalized[valid, me] = -np.log((len(column) + 1 - rank) / (len(column) + 1))
     return normalized
-
-
-def aggregate_terms(terms, mode='mean'):
-    """Average all or the largest one/two observed ME terms; N=0 stays missing."""
-    terms = np.asarray(terms, dtype=float)
-    if terms.ndim != 2 or not terms.shape[1] or np.isinf(terms).any():
-        raise ValueError('Expected finite or missing LS-by-ME scores')
-    valid = np.isfinite(terms)
-    count = valid.sum(1)
-    if mode == 'mean':
-        total = np.where(valid, terms, 0).sum(1)
-    elif mode in ('max', 'top1', 'top2'):
-        largest = 2 if mode == 'top2' else 1
-        values = np.sort(np.where(valid, terms, -np.inf), axis=1)[:, -largest:]
-        total = np.where(np.isfinite(values), values, 0).sum(1)
-        count = np.minimum(count, largest)
-    else:
-        raise ValueError('Aggregation must be mean, max, top1 or top2')
-    return np.divide(total, count, out=np.full(len(terms), np.nan), where=count > 0)
 
 
 def mmd_kernels(axes, bin_sizes, bandwidth_bins=(1., 4., 16.)):

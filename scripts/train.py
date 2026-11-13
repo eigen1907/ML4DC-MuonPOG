@@ -10,10 +10,10 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 import torch
 
-from scripts.models.config import DIALS, EXPERIMENTS, OUT, SEED
+from scripts.models.config import DIALS, EXPERIMENTS, KDE_AE, KDE_MMD_AE, OUT, SEED
 from scripts.data.dials import load_dataset
 from scripts.models.core import (FEATURE_EPOCHS, BATCH_SIZE, HIDDEN_LAYERS,
-                                QUANTILE, calibrate, load_checkpoint, model_spec)
+                                QUANTILE, calibrate, load_checkpoint, model_spec, score_values)
 from scripts.models.networks import histogram_loss
 from scripts.models.preprocessing import (_histograms, _rows, condition_values,
                                            load_pileup, model_features, prepare,
@@ -110,9 +110,7 @@ def fit_conditioned(dataset, context, spec, settings=None):
             from scripts.models.kde import train_reference
 
             saved['basis'] = train_reference(dataset['histograms'], dataset['axes'], basis_train,
-                                            bandwidth_bins=settings['bandwidth_bins'],
-                                            **{key: value for key, value in settings.items()
-                                               if key.startswith('adaptive')})
+                                            bandwidth_bins=settings['bandwidth_bins'])
         saved['bin_variance'] = training_variance(dataset['histograms'], basis_train)
         saved['probability_floor'] = [
             .5 / (dataset['totals'][basis_train, me].sum(dtype=np.float64) + .5 * h.shape[1])
@@ -130,9 +128,6 @@ def fit_conditioned(dataset, context, spec, settings=None):
             raise ValueError('Expected aligned feature values and validity flags')
         available &= mask.any(1)
         dimensions = features.shape[1]
-        if settings.get('mask_me'):
-            dimensions = tuple(h.shape[1] for h in dataset['histograms'])
-            saved['bin_sizes'] = dimensions
         saved.update(feature_me=np.asarray(feature_me, dtype=int), features=list(names))
     train, monitor = train[available[train]], monitor[available[monitor]]
     if not len(train) or not len(monitor):
@@ -170,8 +165,6 @@ def fit_conditioned(dataset, context, spec, settings=None):
         masks = torch.from_numpy(mask)
         feature_me = torch.as_tensor(saved['feature_me'], dtype=torch.long)
         saved['scaler'] = scaler
-        if settings.get('mask_me'):
-            observed_mes = torch.from_numpy(np.asarray(dataset['totals']) > 0)
     inputs = torch.as_tensor(inputs, dtype=torch.float32)
     saved['input_dim'] = inputs.shape[1]
     torch.manual_seed(SEED)
@@ -187,19 +180,6 @@ def fit_conditioned(dataset, context, spec, settings=None):
     batch_size = int(settings.get('batch_size', 1024))
 
     def objective(rows):
-        if settings.get('mask_me'):
-            observed = observed_mes[rows].to(device)
-            if model.training:
-                target = model.sample_target(observed)
-                predicted = model(inputs[rows].to(device), conditions[rows].to(device),
-                                  observed=observed, target_me=target)
-                target_mask = masks[rows] & (feature_me[None, :] == target[:, None])
-            else:
-                predicted = model.predict_heldout(inputs[rows].to(device),
-                                                  conditions[rows].to(device), observed)
-                target_mask = masks[rows]
-            return _feature_loss(predicted, targets[rows], target_mask, feature_me,
-                                 len(dataset['me_names']))
         predicted = model(inputs[rows].to(device), conditions[rows].to(device))
         if is_histogram:
             return histogram_loss(predicted, [h[rows] for h in histograms],
@@ -273,6 +253,24 @@ def check_compatible(spec, saved, dataset, context):
         raise ValueError('Model settings changed; choose a separate --output directory')
 
 
+def fit_mmd(dataset, context, spec):
+    """Reuse the fixed KDE weights; fit only Good-monitor score references."""
+    from scripts.models.kde_scores import fit_ecdf
+    from scripts.predict import predict_terms
+
+    source_spec, saved, path = load_checkpoint(OUT/'model'/KDE_AE)
+    if source_spec.NAME != KDE_AE:
+        raise ValueError(f'Expected a {KDE_AE} source checkpoint at {path}')
+    check_compatible(source_spec, saved, dataset, context)
+    saved = copy.deepcopy(saved)
+    saved.pop('threshold', None)
+    saved.update(experiment=spec.NAME, settings=dict(spec.SETTINGS), source_experiment=KDE_AE,
+                 source_checkpoint=str(path))
+    terms, _ = predict_terms(spec, saved, dataset)
+    saved['score_calibration'] = fit_ecdf(terms, context['monitor_indices'])
+    return saved, terms, score_values(terms, saved)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model', required=True, choices=[f'model_{name}' for name in EXPERIMENTS])
@@ -299,7 +297,9 @@ def main():
         check_compatible(spec, saved, dataset, context)
         print(f'Compatible checkpoint preserved: {path}', flush=True)
         return
-    if spec.KIND == 'feature':
+    if spec.NAME == KDE_MMD_AE:
+        saved, terms, values = fit_mmd(dataset, context, spec)
+    elif spec.KIND == 'feature':
         saved = fit_feature(dataset['features'], context['train'], context['monitor_indices'], spec)
         saved.update(signature=context['signature'], features=context['features'])
     else:
@@ -309,7 +309,8 @@ def main():
                  training_years=saved.get('training_years', sorted(
                      context['frame'].loc[context['train']].dataset.str.extract(r'/Run(20\d\d)')[0].astype(int).unique().tolist())))
     from scripts.predict import predict_terms
-    terms, values = predict_terms(spec, saved, dataset)
+    if spec.NAME != KDE_MMD_AE:
+        terms, values = predict_terms(spec, saved, dataset)
     _, threshold = calibrate(context['frame'], terms, context['calibration'], values)
     saved.update(threshold=threshold, quantile=QUANTILE)
     folder.mkdir(parents=True, exist_ok=True)
