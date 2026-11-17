@@ -1,24 +1,15 @@
-"""Weighted binned Gaussian fitting and native-bin probabilities.
-
-EM treats bin centres as weighted observations without expanding events.
-The shared model uses these fits to learn fixed Gaussian shapes from pooled
-Good training histograms; anomaly scoring lives in shared_gaussian.py.
-"""
+"""Fit a fixed Gaussian reference to one pooled training histogram."""
 
 import numpy as np
 from scipy.special import ndtr
+import torch
 
 
 SCALE_FLOOR_BINS = 1 / np.sqrt(12)
 
 
 def gaussian_bin_probabilities(weights, means, scales, edges, *, periodic=False):
-    """Integrate mixtures over normalized bins, including finite support.
-
-    Arrays have shape (..., components); edges have shape (bins + 1,).
-    Each nonperiodic Gaussian is truncated to the observed interval. For phi,
-    means are modulo one and five wrapped images cover scales up to 0.5.
-    """
+    """Integrate normalized Gaussian mixtures over bins; wrap phi on a circle."""
     weights, means, scales = (np.asarray(x, dtype=np.float64) for x in (weights, means, scales))
     edges = np.asarray(edges, dtype=np.float64)
     if (weights.shape != means.shape or means.shape != scales.shape
@@ -27,137 +18,124 @@ def gaussian_bin_probabilities(weights, means, scales, edges, *, periodic=False)
             or not np.isfinite(edges).all() or not edges[-1] > edges[0]
             or any(not np.isfinite(x).all() for x in (weights, means, scales))
             or (weights < 0).any() or (weights.sum(-1) <= 0).any() or (scales <= 0).any()):
-        raise ValueError("Expected finite mixture parameters, positive scales and ordered bin edges")
+        raise ValueError('Expected finite Gaussian parameters, positive scales and ordered bin edges')
     weights = weights / weights.sum(-1, keepdims=True)
     mu, sigma = means[..., None, :], scales[..., None, :]
     lower, upper = edges[:-1, None], edges[1:, None]
     probability = np.zeros(np.broadcast_shapes(mu.shape, lower.shape), dtype=np.float64)
     for image in (-2, -1, 0, 1, 2) if periodic else (0,):
-        low = (lower - mu - image) / sigma
-        high = (upper - mu - image) / sigma
-        positive = low > 0
-        # Survival-function subtraction avoids 1 - 1 cancellation in the right tail.
-        probability += ndtr(np.where(positive, -low, high)) - ndtr(np.where(positive, -high, low))
+        low, high = (lower - mu - image) / sigma, (upper - mu - image) / sigma
+        right = low > 0
+        probability += ndtr(np.where(right, -low, high)) - ndtr(np.where(right, -high, low))
     probability = np.maximum(probability, 0)
     probability /= np.maximum(probability.sum(-2, keepdims=True), np.finfo(float).tiny)
     probability = (probability * weights[..., None, :]).sum(-1)
-    probability /= np.maximum(probability.sum(-1, keepdims=True), np.finfo(float).tiny)
-    return probability
+    return probability / np.maximum(probability.sum(-1, keepdims=True), np.finfo(float).tiny)
 
 
 def _axis(axis, bins, scale_floor_bins=SCALE_FLOOR_BINS):
-    physical = np.asarray(axis["edges"] if "edges" in axis else
-                          np.linspace(axis["low"], axis["high"], bins + 1), dtype=float)
+    physical = np.asarray(axis['edges'] if 'edges' in axis else
+                          np.linspace(axis['low'], axis['high'], bins + 1), dtype=float)
     if (physical.shape != (bins + 1,) or not np.isfinite(physical).all()
-            or (np.diff(physical) <= 0).any()):
-        raise ValueError("Expected one increasing finite edge array per histogram")
-    periodic = str(axis.get("stem", "")).endswith("__GlbMuon_Glb_phi")
-    if periodic:
-        # Native phi bins have a small padding outside [-pi, pi].
-        edges = np.clip((physical + np.pi) / (2 * np.pi), 0, 1)
-        centers = (edges[:-1] + edges[1:]) / 2
-    else:
-        edges = (physical - physical[0]) / (physical[-1] - physical[0])
-        centers = (edges[:-1] + edges[1:]) / 2
-    widths = np.diff(edges)
-    floor = min(.5, float(np.median(widths[widths > 0])) * scale_floor_bins)
-    return centers.astype(np.float32), edges, floor, periodic
+            or (np.diff(physical) <= 0).any() or not np.isfinite(scale_floor_bins) or scale_floor_bins <= 0):
+        raise ValueError('Expected increasing finite bin edges and a positive minimum width')
+    periodic = str(axis.get('stem', '')).endswith('__GlbMuon_Glb_phi')
+    # Native phi axes have slight padding outside [-pi, pi].
+    edges = (np.clip((physical + np.pi) / (2 * np.pi), 0, 1) if periodic else
+             (physical - physical[0]) / (physical[-1] - physical[0]))
+    native_width = float(np.median(np.diff(physical)))
+    floor = scale_floor_bins * native_width / (2*np.pi if periodic else physical[-1]-physical[0])
+    return ((edges[:-1] + edges[1:]) / 2).astype(np.float32), edges, floor, periodic
 
 
-def _fit_batch(counts, centers, components, floor, periodic, iterations, tolerance, pseudocount):
-    totals = counts.sum(1)
-    normalized = counts / totals[:, None]
-    cumulative = normalized.cumsum(1)
+def _initial_fit(counts, centers, components, floor, periodic, iterations):
+    """Initialize the reference by weighted bin-center EM; no event expansion."""
+    counts = np.asarray(counts, dtype=np.float32)
+    fractions = counts / counts.sum(dtype=np.float64)
     quantiles = (np.arange(components, dtype=np.float32) + .5) / components
-    indices = np.stack([(cumulative >= q).argmax(1) for q in quantiles], axis=1)
-    means = centers[indices]
-    # Break repeated-quantile ties deterministically; a bin is the resolution limit.
-    means = np.clip(means + floor * np.linspace(-.25, .25, components), floor / 2, 1 - floor / 2)
-    variance = (normalized * (centers[None, :] - (normalized @ centers)[:, None]) ** 2).sum(1)
-    scales = np.broadcast_to(np.maximum(np.sqrt(variance) / np.sqrt(components), floor)[:, None], means.shape).copy()
-    scales = np.clip(scales, floor, .5)
-    weights = np.full(means.shape, 1 / components)
-    means, scales, weights = (x.astype(np.float32) for x in (means, scales, weights))
-    previous = np.full(len(counts), -np.inf)
-    converged = np.zeros(len(counts), dtype=bool)
-    used = np.zeros(len(counts), dtype=np.int16)
-    shifts = np.arange(-2, 3, dtype=np.float32) if periodic else np.zeros(1, dtype=np.float32)
-    coordinates = centers[None, :, None, None] - shifts[None, None, None, :]
+    means = centers[np.searchsorted(fractions.cumsum(), quantiles).clip(max=len(centers)-1)]
+    means = np.clip(means + floor * np.linspace(-.25, .25, components), floor/2, 1-floor/2)
+    variance = (fractions * (centers - fractions @ centers) ** 2).sum()
+    scales = np.full(components, np.clip(np.sqrt(variance/components), floor, .5))
+    weights = np.full(components, 1/components)
+    coordinates = centers[:, None, None] - (np.arange(-2, 3) if periodic else np.zeros(1))
+    previous = -np.inf
     for iteration in range(iterations):
-        rows = np.flatnonzero(~converged)
-        if not len(rows):
-            break
-        mu, sigma, mixing = means[rows], scales[rows], weights[rows]
-        delta = (coordinates - mu[:, None, :, None]) / sigma[:, None, :, None]
-        log_density = -.5 * delta ** 2 - np.log(sigma[:, None, :, None]) + np.log(mixing[:, None, :, None])
-        maximum = log_density.max(axis=(2, 3), keepdims=True)
+        delta = (coordinates - means[None, :, None]) / scales[None, :, None]
+        # A numerical log(0) guard adds no pseudo-events to component masses.
+        log_weights = np.log(np.maximum(weights, np.finfo(float).tiny))
+        log_density = -.5 * delta**2 - np.log(scales)[None, :, None] + log_weights[None, :, None]
+        maximum = log_density.max(axis=(1, 2), keepdims=True)
         density = np.exp(log_density - maximum)
-        denominator = density.sum(axis=(2, 3), keepdims=True)
-        responsibility = density / denominator
-        log_like = (normalized[rows] * (maximum[..., 0, 0] + np.log(denominator[..., 0, 0]))).sum(1)
-        stable = (iteration >= 2) & (np.abs(log_like - previous[rows]) < tolerance)
-        converged[rows[stable]] = True
-        previous[rows] = log_like
-        used[rows] = iteration + 1
-        rows, responsibility = rows[~stable], responsibility[~stable]
-        if not len(rows):
-            continue
-        assigned = responsibility * counts[rows, :, None, None]
-        mass = assigned.sum(axis=(1, 3))
-        safe_mass = np.maximum(mass, 1e-20)
-        new_means = (assigned * coordinates).sum(axis=(1, 3)) / safe_mass
-        new_variance = (assigned * (coordinates - new_means[:, None, :, None]) ** 2).sum(axis=(1, 3)) / safe_mass
-        missing = mass < 1e-10
-        means[rows] = np.where(missing, means[rows], new_means % 1 if periodic else np.clip(new_means, 0, 1))
-        scales[rows] = np.where(missing, scales[rows], np.clip(np.sqrt(np.maximum(new_variance, 0)), floor, .5))
-        weights[rows] = (mass + pseudocount) / (totals[rows, None] + components * pseudocount)
-    order = np.argsort(means, axis=1, kind="stable")
-    parameters = np.stack([np.take_along_axis(x, order, axis=1) for x in (weights, means, scales)], axis=-1)
-    return parameters, used, converged
+        total = density.sum(axis=(1, 2), keepdims=True)
+        likelihood = (fractions * (maximum[:, 0, 0] + np.log(total[:, 0, 0]))).sum()
+        if iteration >= 2 and abs(likelihood - previous) < 1e-4:
+            break
+        previous = likelihood
+        assigned = density / total * counts[:, None, None]
+        mass = assigned.sum(axis=(0, 2))
+        safe = np.maximum(mass, 1e-20)
+        fitted_mean = (assigned * coordinates).sum(axis=(0, 2)) / safe
+        fitted_variance = (assigned * (coordinates - fitted_mean[None, :, None])**2).sum(axis=(0, 2)) / safe
+        means = np.where(mass < 1e-10, means, fitted_mean % 1 if periodic else np.clip(fitted_mean, 0, 1))
+        scales = np.where(mass < 1e-10, scales, np.clip(np.sqrt(fitted_variance), floor, .5))
+        weights = mass / mass.sum()
+    return weights, means, scales
 
 
-def fit_mixtures(histograms, axes, components=2, *, iterations=20, batch_size=512,
-                 tolerance=1e-4, pseudocount=.5, scale_floor_bins=SCALE_FLOOR_BINS):
-    """Fit weighted histograms and return parameters, masks and convergence data.
+def _torch_components(means, scales, edges, periodic):
+    """Differentiable native-bin probabilities for the one-time reference fit."""
+    lower, upper = edges[:-1, None], edges[1:, None]
+    probability = means.new_zeros((len(lower), len(means)))
+    for image in (-2, -1, 0, 1, 2) if periodic else (0,):
+        low, high = (lower-means-image)/scales, (upper-means-image)/scales
+        right = low > 0
+        probability = probability + .5 * (
+            torch.erfc(-torch.where(right, -low, high)/np.sqrt(2))
+            - torch.erfc(-torch.where(right, -high, low)/np.sqrt(2)))
+    probability = probability.clamp_min(0)
+    probability = probability / probability.sum(0, keepdim=True).clamp_min(1e-30)
+    probability = probability.clamp_min(1e-12)
+    return probability / probability.sum(0, keepdim=True)
 
-    Parameters have shape (histogram, ME, component, 3), storing weight,
-    normalized location and width, sorted by location. Phi wraps on a circle.
-    Empty histograms have valid=False and zero placeholder parameters.
-    """
-    if (type(components) is not int or components < 1 or type(iterations) is not int or iterations < 1
-            or type(batch_size) is not int or batch_size < 1
-            or not np.isfinite([tolerance, pseudocount, scale_floor_bins]).all()
-            or tolerance < 0 or pseudocount < 0 or scale_floor_bins <= 0):
-        raise ValueError("Expected positive integer fit sizes and nonnegative regularization")
-    if len(histograms) != len(axes) or not histograms:
-        raise ValueError("Expected matching nonempty histogram and axis lists")
-    arrays = [np.asarray(h) for h in histograms]
-    size = len(arrays[0])
-    if any(h.ndim != 2 or len(h) != size or h.shape[1] == 0 for h in arrays):
-        raise ValueError("Expected aligned LS-by-bin arrays")
-    shape = (size, len(arrays))
-    parameters = np.zeros((*shape, components, 3), dtype=np.float32)
-    valid = np.zeros(shape, dtype=bool)
-    totals = np.zeros(shape, dtype=np.float64)
-    n_iterations = np.zeros(shape, dtype=np.int16)
-    converged = np.zeros(shape, dtype=bool)
-    for me, (histogram, axis) in enumerate(zip(arrays, axes)):
-        centers, _, floor, periodic = _axis(axis, histogram.shape[1], scale_floor_bins)
-        for start in range(0, size, batch_size):
-            stop = min(size, start + batch_size)
-            h = np.asarray(histogram[start:stop], dtype=np.float32)
-            if not np.isfinite(h).all() or (h < 0).any():
-                raise ValueError("Expected finite nonnegative histogram contents")
-            total = h.sum(1, dtype=np.float64)
-            totals[start:stop, me] = total
-            observed = total > 0
-            valid[start:stop, me] = observed
-            if not observed.any():
-                continue
-            rows = np.flatnonzero(observed) + start
-            fitted, used, done = _fit_batch(h[observed], centers, components, floor, periodic,
-                                           iterations, tolerance, pseudocount)
-            parameters[rows, me] = fitted
-            n_iterations[rows, me], converged[rows, me] = used, done
-    return dict(parameters=parameters, valid=valid, totals=totals,
-                iterations=n_iterations, converged=converged)
+
+def fit_reference(pooled, axis, components=16, *, iterations=80,
+                  reference_iterations=150, scale_floor_bins=SCALE_FLOOR_BINS):
+    """Fit locations, widths and weights once using native-bin likelihood."""
+    pooled = np.asarray(pooled, dtype=np.float64)
+    if (pooled.ndim != 1 or not np.isfinite(pooled).all() or (pooled < 0).any()
+            or pooled.sum() <= 0 or type(components) is not int or components < 1):
+        raise ValueError('Expected a nonempty nonnegative reference histogram and positive Gaussian count')
+    centers, edges, floor, periodic = _axis(axis, len(pooled), scale_floor_bins)
+    weights, means, scales = _initial_fit(pooled, centers, components, floor, periodic, iterations)
+    logits = torch.tensor(np.log(np.maximum(weights, np.finfo(float).tiny)),
+                          dtype=torch.float64, requires_grad=True)
+    locations = torch.tensor(np.log(np.clip(means, 1e-8, 1-1e-8) / np.clip(1-means, 1e-8, 1)),
+                             dtype=torch.float64, requires_grad=True)
+    log_scales = torch.tensor(np.log(scales), dtype=torch.float64, requires_grad=True)
+    edge_tensor = torch.tensor(edges, dtype=torch.float64)
+    fractions = torch.tensor(pooled/pooled.sum(), dtype=torch.float64)
+    optimizer = torch.optim.LBFGS([logits, locations, log_scales], lr=1.,
+                                 max_iter=reference_iterations, tolerance_grad=1e-8,
+                                 tolerance_change=1e-10, line_search_fn='strong_wolfe')
+
+    def objective():
+        optimizer.zero_grad()
+        probability = _torch_components(locations.sigmoid(), log_scales.exp().clamp(floor, .5),
+                                        edge_tensor, periodic) @ logits.softmax(0)
+        loss = -(fractions * probability.clamp_min(1e-30).log()).sum()
+        loss.backward()
+        return loss
+
+    optimizer.step(objective)
+    weights = logits.softmax(0).detach().numpy()
+    means = locations.sigmoid().detach().numpy()
+    scales = log_scales.exp().clamp(floor, .5).detach().numpy()
+    order = np.argsort(means, kind='stable')
+    weights, means, scales = weights[order], means[order], scales[order]
+    probabilities = gaussian_bin_probabilities(np.ones((components, 1)), means[:, None],
+                                               scales[:, None], edges, periodic=periodic).T
+    probabilities = np.maximum(probabilities, 1e-12)
+    probabilities /= probabilities.sum(0, keepdims=True)
+    return dict(weights=weights, means=means, scales=scales, probabilities=probabilities,
+                edges=edges, periodic=periodic, floor=floor, stem=axis.get('stem', 'ME'))

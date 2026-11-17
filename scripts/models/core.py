@@ -1,20 +1,16 @@
-"""Shared scoring, calibration and checkpoint loading; no fitting."""
+"""Checkpoint I/O, ME-error aggregation and Good-only threshold calibration."""
 
 import importlib
-import json
 from pathlib import Path
-import pickle
 
 import numpy as np
 import pandas as pd
 import torch
 
-from scripts.models.config import EXPERIMENTS, FEATURE_AE, OUT
+from scripts.models.config import EXPERIMENTS
 
-HIDDEN_LAYERS = (8, 4, 8)
-FEATURE_EPOCHS = 80
-BATCH_SIZE = 1024
-QUANTILE = .975
+NORMALIZATION_QUANTILE = .975
+THRESHOLD_QUANTILE = .99
 
 
 def model_spec(name):
@@ -27,41 +23,23 @@ def model_spec(name):
 def load_checkpoint(path):
     path = Path(path)
     if path.is_dir():
-        files = [path/name for name in ('model.pkl', 'model.pt') if (path/name).is_file()]
-        if len(files) != 1:
-            raise ValueError(f'Expected one model checkpoint in {path}')
-        path = files[0]
-    if path.suffix == '.pkl':
-        saved = pickle.loads(path.read_bytes())
-        inferred = FEATURE_AE
-    elif path.suffix == '.pt':
-        saved = torch.load(path, map_location='cpu', weights_only=False)
-        inferred = path.parent.name
-    else:
-        raise ValueError(f'Expected a .pkl or .pt checkpoint: {path}')
-    return model_spec(saved.get('experiment', inferred)), saved, path
+        path = path / 'model.pt'
+    saved = torch.load(path, map_location='cpu', weights_only=False)
+    spec = model_spec(saved['experiment'])
+    if spec.KIND == 'gmm' and (saved['settings'].get('loss') != spec.SETTINGS['loss']
+                              or saved['settings'].get('loss_normalization') != spec.SETTINGS.get('loss_normalization')):
+        raise ValueError('This GMM checkpoint uses the previous loss/score; keep its archived code and results')
+    return spec, saved, path
 
 
 def restore_model(spec, saved):
-    if spec.KIND == 'feature':
-        return saved['model']
-    dimensions = saved['bin_sizes'] if spec.KIND == 'mdn' else saved['input_dim']
-    model = spec.build_model(dimensions, saved['settings'])
+    model = spec.build_model(saved['input_dim'], saved['settings'])
     model.load_state_dict(saved['state_dict'])
-    model.eval()
-    return model
+    return model.eval()
 
 
 def threshold_for(path, saved, spec):
-    value = saved.get('threshold')
-    if value is None:
-        canonical = OUT/'model'/spec.NAME/('model.pkl' if spec.KIND == 'feature' else 'model.pt')
-        filename = Path(path)/canonical.name if Path(path).is_dir() else Path(path)
-        metrics = OUT/'predict'/spec.NAME/'metrics.json'
-        if filename.resolve() != canonical.resolve() or not metrics.is_file():
-            raise FileNotFoundError(f'No fixed calibration threshold in {path}')
-        value = json.loads(metrics.read_text())['threshold']
-    value = float(value)
+    value = float(saved['threshold'])
     if not np.isfinite(value) or value <= 0:
         raise ValueError('Calibration threshold must be positive and finite')
     return value
@@ -70,49 +48,48 @@ def threshold_for(path, saved, spec):
 def mean_score(terms):
     terms = np.asarray(terms, dtype=float)
     if terms.ndim != 2 or np.isinf(terms).any():
-        raise ValueError('Expected an LS-by-ME array of finite or missing residuals')
+        raise ValueError('Expected finite or missing LS-by-ME residuals')
     valid = np.isfinite(terms)
     return np.divide(np.where(valid, terms, 0).sum(1), valid.sum(1),
                      out=np.full(len(terms), np.nan), where=valid.any(1))
 
 
-def score_values(terms, saved):
-    """Optional saved, Good-monitor-only rank calibration; default stays unchanged."""
-    reference = saved.get('score_calibration')
-    if reference is None:
+def normalized_max(terms, scales):
+    terms, scales = np.asarray(terms, dtype=float), np.asarray(scales, dtype=float)
+    if (terms.ndim != 2 or scales.shape != (terms.shape[1],)
+            or not np.isfinite(scales).all() or (scales <= 0).any()
+            or np.isinf(terms).any() or (terms[np.isfinite(terms)] < 0).any()):
+        raise ValueError('Expected nonnegative ME errors and positive normal-error scales')
+    valid = np.isfinite(terms)
+    values = np.max(np.where(valid, terms/scales, -np.inf), axis=1)
+    values[~valid.any(1)] = np.nan
+    return values
+
+
+def score_terms(terms, saved):
+    mode = saved.get('score_mode')
+    if mode == 'mean':
         return mean_score(terms)
-    from scripts.models.kde_scores import ecdf_terms, top_mean_score
-
-    return top_mean_score(ecdf_terms(terms, reference), saved['settings'].get('mmd_top_n'))
-
-
-def feature_terms(features, saved):
-    """Keep the original 16-feature baseline scoring unchanged."""
-    features = np.asarray(features, dtype=np.float32)
-    if features.ndim != 2 or not features.shape[1] or features.shape[1] % 2:
-        raise ValueError('Expected an LS-by-feature matrix of mean/std pairs')
-    x = saved['scaler'].transform(features)
-    errors = (x - saved['model'].predict(x)) ** 2
-    return errors.reshape(len(errors), features.shape[1] // 2, 2).mean(2), errors.mean(1)
+    if mode not in ('deviance_max', 'loss_norm_max', 'norm_deviance_max') or not np.all(np.asarray(saved['me_scales']) == 1):
+        raise ValueError('GMM scoring uses its loss errors without another ME normalization')
+    return normalized_max(terms, saved['me_scales'])
 
 
-def calibrate(frame, terms, calibration, values=None):
-    terms = np.asarray(terms)
-    if terms.ndim != 2 or len(terms) != len(frame):
-        raise ValueError('Expected one row of ME residuals per LS')
-    values = mean_score(terms) if values is None else np.asarray(values, dtype=float)
+def calibrate(frame, terms, calibration, scales=None, *, quantile=THRESHOLD_QUANTILE):
+    if (isinstance(quantile, bool) or not np.isfinite(quantile) or not 0 < quantile < 1):
+        raise ValueError('Calibration quantile must be finite and in (0, 1)')
+    values = mean_score(terms) if scales is None else normalized_max(terms, scales)
     calibration = np.asarray(calibration)
-    if calibration.shape != (len(frame),) or calibration.dtype != bool or values.shape != (len(frame),):
-        raise ValueError('Expected one calibration flag and score per LS')
+    if calibration.dtype != bool or calibration.shape != values.shape or len(frame) != len(values):
+        raise ValueError('Expected one calibration flag per LS')
     reference = values[calibration & np.isfinite(values)]
     if not len(reference):
-        raise ValueError('No observed Good calibration scores')
-    cut = float(np.quantile(reference, QUANTILE))
+        raise ValueError('No finite Good calibration scores')
+    cut = float(np.quantile(reference, quantile))
     if not np.isfinite(cut) or cut <= 0:
-        raise ValueError('Calibration cut must be positive and finite')
-    scores = frame.copy()
-    scores['anomaly_score'] = values
-    for target in range(terms.shape[1]):
-        scores[f'term_{target}'] = terms[:, target]
-    scores['flagged'] = pd.array(np.where(frame.dcs_pass & np.isfinite(values), values > cut, None), dtype='boolean')
+        raise ValueError('Calibration threshold must be positive and finite')
+    scores = frame.assign(anomaly_score=values)
+    for me in range(terms.shape[1]):
+        scores[f'term_{me}'] = terms[:, me]
+    scores['flagged'] = pd.array(np.where(np.isfinite(values), values > cut, None), dtype='boolean')
     return scores, cut

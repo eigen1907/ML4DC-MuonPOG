@@ -3,85 +3,161 @@
 import hashlib
 import json
 from pathlib import Path
+import tempfile
+from zipfile import BadZipFile
 
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
-import torch
 
-from scripts.models.config import SEED, SPECIAL_RUNS
+from scripts.models.config import OUT, SEED, SPLIT_POLICY
 
 
 MONITOR_LIMIT = 4096
 
 
-def _moments(counts, low, high, eta=False):
-    """Historical 0–1 moments; eta is folded and an empty ME gives two zeros."""
+def _prefit_identity(dataset, basis):
+    """Hash the actual observations, independent of their quality labels."""
+    from scripts.models.shared_gaussian import basis_fingerprint
+
+    data = hashlib.sha256()
+    columns = ['dataset', 'run_number', 'ls_number']
+    columns += [name for name in ('ls_end', 'n_ls') if name in dataset['frame']]
+    data.update(dataset['frame'][columns].to_csv(index=False).encode())
+    data.update(json.dumps(dataset.get('ls_grouping'), sort_keys=True).encode())
+    for name, histogram in zip(dataset['me_names'], dataset['histograms']):
+        histogram = np.ascontiguousarray(histogram)
+        data.update(name.encode())
+        data.update(f'{histogram.shape}:{histogram.dtype}'.encode())
+        data.update(memoryview(histogram))
+    return data.hexdigest(), basis_fingerprint(basis)
+
+
+def _prefit_controls(settings, free):
+    controls = dict(version='prefit-v1', free=bool(free),
+                    weight_iterations=int(settings['weight_iterations']), prior=0)
+    if free:
+        controls.update(iterations=int(settings.get('prefit_iterations', 60)),
+                        lr=float(settings.get('prefit_lr', .04)),
+                        batch_size=int(settings.get('prefit_batch_size', 512)),
+                        device=str(settings.get('prefit_device', 'cpu')),
+                        max_scale=float(settings.get('max_scale', .5)),
+                        tolerance=float(settings.get('prefit_tolerance', 1e-6)),
+                        dtype='float32', solver='Adam')
+    else:
+        controls.update(dtype='float64-EM/float32-output', solver='EM')
+    return controls
+
+
+def _validate_prefit(result, dataset, basis, free):
+    rows, n_mes = len(dataset['frame']), len(basis)
+    widths = [len(item['weights']) * (3 if free else 1) for item in basis]
+    owner = np.repeat(np.arange(n_mes, dtype=np.int64), widths)
+    names = [f'{item["stem"]}__g{i}_{kind}' for item in basis
+             for kind in (('weight', 'mean', 'log_sigma') if free else ('weight',))
+             for i in range(len(item['weights']))]
+    features, valid = result['features'], result['valid']
+    if (features.shape != (rows, len(owner)) or features.dtype != np.float32
+            or valid.shape != (rows, n_mes) or valid.dtype != bool
+            or result['feature_me'].dtype != np.int64
+            or not np.array_equal(result['feature_me'], owner)
+            or list(result['feature_names']) != names):
+        raise ValueError('Prefit arrays, ME owners or feature names differ from this dataset')
+    for me, histogram in enumerate(dataset['histograms']):
+        if not np.array_equal(valid[:, me], histogram.sum(1, dtype=np.int64) > 0):
+            raise ValueError('Cached prefit observation mask differs from native counts')
+    for first in range(0, rows, 4096):
+        observed = valid[first:first + 4096, owner]
+        if not np.isfinite(features[first:first + 4096][observed]).all():
+            raise ValueError('Nonfinite measured prefit features')
+
+
+def _cached_prefit(dataset, basis, settings, free, identity=None):
+    """Share fixed/free prefit results between training, prediction and models."""
+    from scripts.models.shared_gaussian import fit_weights
+
+    identity = _prefit_identity(dataset, basis) if identity is None else identity
+    controls = _prefit_controls(settings, free)
+    manifest = dict(data_sha256=identity[0], basis_sha256=identity[1],
+                    controls=controls, rows=len(dataset['frame']), me_names=dataset['me_names'])
+    key = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
+    kind = f'{"free" if free else "fixed"}{len(basis[0]["weights"])}'
+    path = OUT/'dataset'/'prefit'/kind/(key+'.npz')
+    use_disk = dataset.get('cache_prefit', True)
+    cached = dataset.get('_shape_cache')
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    if use_disk and path.is_file():
+        try:
+            with np.load(path, allow_pickle=False) as stored:
+                if json.loads(str(stored['manifest'].item())) != manifest:
+                    raise ValueError('Prefit cache identity differs')
+                result = dict(features=stored['features'], valid=stored['valid'],
+                              feature_me=stored['feature_me'],
+                              feature_names=stored['feature_names'].tolist(),
+                              diagnostics=json.loads(str(stored['diagnostics'].item())))
+            _validate_prefit(result, dataset, basis, free)
+        except (OSError, ValueError, KeyError, EOFError, BadZipFile) as error:
+            raise ValueError(f'Invalid prefit cache: {path}; remove it and retry') from error
+        print(f'Loaded {kind} prefit cache: {path}', flush=True)
+    else:
+        if free:
+            from scripts.models.free_gaussian import prefit_free
+
+            fixed = _cached_prefit(dataset, basis, settings, False, identity)
+            result = prefit_free(dataset['histograms'], basis, settings,
+                                initial_weights=fixed['features'])
+        else:
+            result = fit_weights(dataset['histograms'], basis,
+                                 iterations=settings['weight_iterations'])
+        _validate_prefit(result, dataset, basis, free)
+        if use_disk:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=path.parent, suffix='.tmp', delete=False) as handle:
+                    temporary = Path(handle.name)
+                    np.savez(handle, features=result['features'], valid=result['valid'],
+                             feature_me=result['feature_me'],
+                             feature_names=np.asarray(result['feature_names']),
+                             manifest=json.dumps(manifest, sort_keys=True),
+                             diagnostics=json.dumps(result.get('diagnostics', [])))
+                temporary.replace(path)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+            print(f'Saved {kind} prefit cache: {path}', flush=True)
+    dataset['_shape_cache'] = (key, result)
+    if use_disk:
+        dataset.setdefault('prefit_cache', {})[kind] = dict(path=str(path), key=key)
+    return result
+
+
+def _moments(counts, low, high, order=2):
+    """Bin-center moments on the signed native axis, rescaled affinely to 0–1.
+
+    Eta is not folded: opposite detector hemispheres remain distinguishable.
+    The third feature is population skewness. Empty or zero-variance
+    histograms use zero for undefined skewness, following the empty-histogram
+    mean/std convention. No bias or low-statistics correction is applied.
+    """
+    if order not in (2, 3):
+        raise ValueError('Expected two or three moments per ME')
     low, high = float(low), float(high)
     edges = np.linspace(low, high, counts.shape[1] + 1, dtype=np.float32)
     centers = (edges[:-1] + edges[1:]) / 2
-    positions = np.abs(centers) / max(abs(low), abs(high)) if eta else (centers - low) / (high - low)
+    positions = (centers - low) / (high - low)
     counts = counts.astype(np.float64)
     totals = counts.sum(axis=1)
     weights = np.divide(counts, totals[:, None], out=np.zeros_like(counts), where=totals[:, None] > 0)
     mean = weights @ positions
     std = np.sqrt((weights * (positions - mean[:, None]) ** 2).sum(axis=1))
-    return np.column_stack((mean, std))
-
-
-
-def _rows(selection, size):
-    selection = np.asarray(selection)
-    if selection.dtype == bool:
-        if selection.shape != (size,):
-            raise ValueError('Expected one training flag per LS')
-        selection = np.flatnonzero(selection)
-    if (selection.ndim != 1 or not np.issubdtype(selection.dtype, np.integer)
-            or not len(selection) or len(np.unique(selection)) != len(selection)
-            or (selection < 0).any() or (selection >= size).any()):
-        raise ValueError('Expected nonempty unique LS indices')
-    return selection
-
-
-
-def _histograms(dataset):
-    histograms = [np.asarray(h) for h in dataset['histograms']]
-    totals = np.asarray(dataset['totals'])
-    if (not histograms or totals.ndim != 2 or totals.shape[1] != len(histograms)
-            or not np.isfinite(totals).all() or (totals < 0).any()
-            or (not np.issubdtype(totals.dtype, np.integer) and (totals != np.floor(totals)).any())):
-        raise ValueError('Expected finite nonnegative integer histogram totals')
-    for index, hist in enumerate(histograms):
-        if (hist.ndim != 2 or len(hist) != len(totals) or hist.shape[1] < 1
-                or not np.isfinite(hist).all() or (hist < 0).any()
-                or (not np.issubdtype(hist.dtype, np.integer) and (hist != np.floor(hist)).any())
-                or not np.array_equal(hist.sum(-1, dtype=np.float64), totals[:, index])):
-            raise ValueError('Invalid native-bin histogram or inconsistent totals')
-    return histograms, totals
-
-
-
-def prepare(dataset, train_mask=None, scaler=None):
-    """Native fractions + training-scaled log1p(N) + nonempty masks.
-
-    Inference uses the saved scaler and needs no training selection.
-    """
-    histograms, totals = _histograms(dataset)
-    valid = totals > 0
-    bins, targets = sum(h.shape[1] for h in histograms), len(histograms)
-    values = np.zeros((len(totals), bins + 2 * targets), dtype=np.float32)
-    start = 0
-    for target, hist in enumerate(histograms):
-        stop = start + hist.shape[1]
-        np.divide(hist, totals[:, target, None], out=values[:, start:stop], where=valid[:, target, None])
-        start = stop
-    logs = np.log1p(totals).astype(np.float32)
-    if scaler is None:
-        train = _rows(train_mask, len(totals))
-        scaler = StandardScaler().fit(logs[train])
-    values[:, bins:bins + targets] = scaler.transform(logs)
-    values[:, bins + targets:] = valid
-    return torch.from_numpy(values), scaler
+    moments = [mean, std]
+    if order > 2:
+        valid = std > 0
+        centered = np.divide(positions - mean[:, None], std[:, None],
+                             out=np.zeros_like(weights), where=valid[:, None])
+        squared = centered * centered
+        moments.append((weights * squared * centered).sum(axis=1))
+    return np.column_stack(moments)
 
 
 
@@ -90,102 +166,103 @@ def training_context(dataset):
     from scripts.data.dials import fingerprint, validation_roles
 
     frame = dataset['frame'].copy()
-    roles = validation_roles(frame)
-    normal = frame.label.eq('good') & ~frame.run_number.isin(SPECIAL_RUNS)
-    train = (normal & frame.split.eq('train') & frame.dcs_pass).to_numpy()
-    monitor = (normal & frame.split.eq('validation') & frame.dcs_pass & frame.run_number.isin(roles['monitor_runs'])).to_numpy()
-    calibration = (normal & frame.split.eq('validation') & frame.dcs_pass & frame.run_number.isin(roles['calibration_runs'])).to_numpy()
+    if dataset.get('split_policy') != SPLIT_POLICY:
+        raise ValueError('Expected the shared RR/DCS/Muon-certified split policy')
+    if not frame.eta_entries.gt(0).all():
+        raise ValueError('Zero eta-entry LS must be excluded from all ML splits')
+    roles = dataset.get('validation_roles') or validation_roles(frame, quality_split=True)
+    if (frame.split.isin(('train', 'validation')) & ~frame.quality_pass).any():
+        raise ValueError('Train/Validation contains LS failing the quality split policy')
+    train = frame.split.eq('train').to_numpy()
+    monitor = (frame.split.eq('validation') & frame.run_number.isin(roles['monitor_runs'])).to_numpy()
+    calibration = (frame.split.eq('validation') & frame.run_number.isin(roles['calibration_runs'])).to_numpy()
+    certified = frame.muon_certified.to_numpy(dtype=bool)
     fit_monitor = np.flatnonzero(monitor)
     fit_monitor = np.random.default_rng(SEED).choice(fit_monitor, min(MONITOR_LIMIT, len(fit_monitor)), replace=False)
     if (train & monitor).any() or (train & calibration).any() or (monitor & calibration).any():
         raise ValueError('Training, monitoring and calibration overlap')
-    signature = dict(version='five-ae-dcs-v1', data_fingerprint=fingerprint(dataset), seed=SEED,
-                     selection='Good training runs AND DCS-pass; no entry/statistics cut',
+    signature = dict(version='unconditioned-signed-moments-v3',
+                     data_fingerprint=fingerprint(dataset), seed=SEED,
+                     split_policy=dataset['split_policy'],
+                     selection='Zero eta ROOT entries excluded from all ML splits; Train/Validation require '
+                               'RR Good AND DCS-pass AND Muon-certified; remaining positive-eta LS Test',
+                     muon_certification_sha256=hashlib.sha256(certified.astype(np.uint8).tobytes()).hexdigest(),
                      training_ls=int(train.sum()), monitor_runs=roles['monitor_runs'],
                      calibration_runs=roles['calibration_runs'])
-    features = [f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
+    if dataset.get('ls_grouping'):
+        signature['ls_grouping'] = dataset['ls_grouping']
     return dict(frame=frame, train=train, monitor_indices=fit_monitor,
-                calibration=calibration, signature=signature, features=features)
+                calibration=calibration, signature=signature)
 
 
-def load_pileup(frame):
-    """Join annual OMS by physical run/LS; missing observations remain NaN."""
-    values = np.full(len(frame), np.nan, dtype=np.float64)
+def load_muon_certification(frame):
+    """Return inclusive nominal and separate 2025/2026 low-PU certification.
+
+    Files are public CMS JSON snapshots stored verbatim by the metadata muon
+    recipe. Missing annual files are an error, not an uncertified verdict.
+    This mask selects fitting LS; the split policy keeps the raw RR verdict
+    separately when assigning operational Good/Bad labels.
+    """
+    from scripts.data.metadata import validate_lumi_mask
+
+    certified = np.zeros(len(frame), dtype=bool)
     years = frame.dataset.str.extract(r'/Run(20\d\d)', expand=False)
-    for year in sorted(years.dropna().unique()):
-        path = Path('data/oms') / f'{year}.json'
-        if not path.is_file():
-            continue
-        rows = json.loads(path.read_text()).get('lumisections', [])
-        wanted = set(frame.loc[years.eq(year), 'run_number'])
-        triples = [(r['run_number'], r['lumisection_number'], r.get('pileup'))
-                   for r in rows if r['run_number'] in wanted]
-        del rows
-        if not triples:
-            continue
-        table = pd.DataFrame(triples, columns=['run_number', 'ls_number', 'pileup'])
-        if table.duplicated(['run_number', 'ls_number']).any():
-            raise ValueError(f'Duplicate OMS run/LS rows: {path}')
-        table['pileup'] = pd.to_numeric(table.pileup, errors='coerce')
-        selected = years.eq(year).to_numpy()
-        joined = frame.loc[selected, ['run_number', 'ls_number']].merge(
-            table, on=['run_number', 'ls_number'], how='left', sort=False,
-            validate='many_to_one')
-        values[selected] = joined.pileup.to_numpy(dtype=float, na_value=np.nan)
-    values[~np.isfinite(values) | (values < 0)] = np.nan
-    return values
-
-
-def condition_values(raw, train_mask=None, scaler=None, transform='linear'):
-    """Fit pile-up scaling on known training LS; never impute missing PU as data."""
-    raw = np.asarray(raw, dtype=np.float64)
-    if raw.ndim != 1:
-        raise ValueError('Expected one pile-up value per LS')
-    valid = np.isfinite(raw) & (raw >= 0)
-    values = np.zeros((len(raw), 1), dtype=np.float32)
-    if transform not in ('linear', 'log1p'):
-        raise ValueError('Expected linear or log1p pile-up condition')
-    values[valid, 0] = np.log1p(raw[valid]) if transform == 'log1p' else raw[valid]
-    if scaler is None:
-        rows = _rows(train_mask, len(raw))
-        rows = rows[valid[rows]]
-        if not len(rows):
-            raise ValueError('No training LS with valid OMS pile-up')
-        scaler = StandardScaler().fit(values[rows])
-    if valid.any():
-        values[valid] = scaler.transform(values[valid])
-    return torch.from_numpy(values), scaler, valid
+    if years.isna().any():
+        raise ValueError('Dataset year is required for Muon certification')
+    for year in sorted(years.unique()):
+        paths = [Path('data/rr') / f'{year}_muon.json']
+        if year in ('2025', '2026'):
+            paths.append(Path('data/rr') / f'{year}_lowPU.json')
+        annual_positions = np.flatnonzero(years.eq(year).to_numpy())
+        annual = frame.iloc[annual_positions][['run_number', 'ls_number']]
+        for path in paths:
+            if not path.is_file():
+                raise FileNotFoundError(f'Missing Muon certification: {path}; '
+                                        f'run bash runs/data/muon_cert.sh --years {year}')
+            intervals = json.loads(path.read_bytes())
+            validate_lumi_mask(intervals)
+            for run, positions in annual.groupby('run_number', sort=False).indices.items():
+                rows = annual_positions[positions]
+                ls = annual.iloc[positions].ls_number.to_numpy()
+                for first, last in intervals.get(str(int(run)), []):
+                    certified[rows] |= (ls >= first) & (ls <= last)
+    return certified
 
 
 def model_features(dataset, spec, settings, basis=None):
     """Return targets, observation masks and the ME owning each feature."""
-    if spec.KIND == 'conditional':
-        values = np.asarray(dataset['features'], dtype=np.float32)
-        return values, np.ones_like(values, dtype=bool), np.repeat(
-            np.arange(len(dataset['me_names'])), 2), [
-            f'{me}__{kind}' for me in dataset['me_names'] for kind in ('mean', 'std')]
-    if spec.KIND in ('shared_gmm', 'kde'):
-        from scripts.models.shared_gaussian import fit_weights
-
+    if spec.KIND == 'moments':
+        order = settings.get('moment_order', 2)
+        if order not in (2, 3):
+            raise ValueError('Expected two or three moments per ME')
+        kinds = ('mean', 'std', 'skewness')[:order]
+        if order == 2:
+            values = np.asarray(dataset['features'], dtype=np.float32)
+        else:
+            values = np.empty((len(dataset['features']), order * len(dataset['me_names'])), dtype=np.float32)
+            for me, (histogram, axis) in enumerate(zip(dataset['histograms'], dataset['axes'])):
+                for start in range(0, len(values), 4096):
+                    stop = start + 4096
+                    values[start:stop, order*me:order*(me+1)] = _moments(
+                        histogram[start:stop], axis['low'], axis['high'],
+                        order=order)
+        totals = dataset.get('totals')
+        if totals is None:
+            totals = np.column_stack([histogram.sum(axis=1) for histogram in dataset['histograms']])
+        mask = np.repeat(np.asarray(totals) > 0, order, axis=1)
+        return values, mask, np.repeat(
+            np.arange(len(dataset['me_names'])), order), [
+            f'{me}__{kind}' for me in dataset['me_names'] for kind in kinds]
+    if spec.KIND == 'gmm':
         if basis is None:
             raise ValueError('Density features require a trained basis/reference')
-        digest = hashlib.sha256()
-        for item in basis:
-            reference = item['weights'] if spec.KIND == 'shared_gmm' else item['raw_reference']
-            digest.update(np.asarray(reference, dtype='<f8').tobytes())
-            digest.update(np.asarray(item['probabilities'], dtype='<f8').tobytes())
-        key = (spec.KIND, digest.hexdigest(), settings['prior_strength'], settings.get('weight_iterations'))
-        cached = dataset.get('_shape_cache')
-        if cached is None or cached[0] != key:
-            if spec.KIND == 'shared_gmm':
-                result = fit_weights(dataset['histograms'], basis,
-                                     prior_strength=key[2], iterations=key[3])
-            else:
-                from scripts.models.kde import smooth
-
-                result = smooth(dataset['histograms'], basis, prior_strength=key[2])
-            dataset['_shape_cache'] = (key, result)
-        result = dataset['_shape_cache'][1]
+        result = dataset.get('_prefit_override')
+        if result is None:
+            result = _cached_prefit(dataset, basis, settings, bool(settings.get('free')))
+        else:
+            # Plotting selects exact rows from the full prefit cache. In
+            # particular, GPU free fits must not be repeated in tiny batches.
+            _validate_prefit(result, dataset, basis, bool(settings.get('free')))
         owner = result['feature_me']
         return result['features'], result['valid'][:, owner], owner, result['feature_names']
     raise ValueError('Unknown feature representation')

@@ -1,14 +1,14 @@
-"""Mean/std feature autoencoder trained on DCS-ready Good LS."""
+"""Mean/std autoencoder using signed histogram axes, without external inputs."""
 
-from sklearn.neural_network import MLPRegressor
+from scripts.models.config import TWO_FEATURE_AE
+from scripts.models.networks import AutoEncoder
 
-from scripts.models.config import FEATURE_AE, SEED
-from scripts.models.core import FEATURE_EPOCHS, BATCH_SIZE, HIDDEN_LAYERS
+NAME = TWO_FEATURE_AE
+KIND = 'moments'
+SETTINGS = dict(hidden=(32, 4), epochs=120, lr=.0005, weight_decay=1e-4,
+                patience=12, batch_size=1024, moment_order=2)
 
-NAME = FEATURE_AE
-KIND = 'feature'
 
-
-def build_model():
-    return MLPRegressor(hidden_layer_sizes=HIDDEN_LAYERS, batch_size=BATCH_SIZE,
-                        random_state=SEED, tol=0, n_iter_no_change=FEATURE_EPOCHS + 1)
+def build_model(dimensions, settings=None):
+    settings = SETTINGS if settings is None else settings
+    return AutoEncoder(dimensions, hidden=tuple(settings['hidden']))

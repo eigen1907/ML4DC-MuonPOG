@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 from sklearn.model_selection import train_test_split
 
 from scripts.models.config import (DCS_DATA, DIALS, IDS, MODEL_MES, PROMPT_RECO_PATTERN,
-                    REGIONS, RR_DATA, SEED, SPECIAL_RUNS, cached_runs, dials_folder)
+                    REGIONS, RR_DATA, SEED, SPECIAL_RUNS, SPLIT_POLICY, cached_runs, dials_folder)
 from scripts.models.preprocessing import _moments
 
 
@@ -119,19 +119,79 @@ def load_run_labels(years=None):
     return labels.set_index("run_number").label
 
 
-def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False):
+def assign_quality_splits(frame, run_split=None, *, policy=SPLIT_POLICY):
+    """Reserve Good run roles, then put every LS failing quality in Test.
+
+    Only RR-Good, DCS-pass, Muon-certified LS with positive eta ROOT entries
+    can enter Train/Validation. Zero-entry LS are operationally Bad, then
+    excluded from every ML split by load_dataset. Positive low counts remain
+    eligible. Run roles are reserved from RR/DCS/JSON quality before this veto.
+    Fresh roles use all selected years. Supplied checkpoint roles are replayed,
+    with unseen runs held out. Failed LS from a reserved fitting run are tagged
+    explicitly; they are not independent held-out-run observations.
+    """
+    from scripts.models.preprocessing import load_muon_certification
+
+    if policy != SPLIT_POLICY:
+        raise ValueError('Unknown quality split policy')
+    frame = frame.copy()
+    if 'rr_label' not in frame:
+        frame['rr_label'] = frame['label']
+    if 'muon_certified' not in frame:
+        frame['muon_certified'] = load_muon_certification(frame)
+    frame['muon_certified'] = frame.muon_certified.fillna(False).astype(bool)
+    quality = (frame.rr_label.eq('good') & frame.dcs_pass.fillna(False)
+               & frame.muon_certified)
+    positive_eta = frame.eta_entries.gt(0)
+    frame['quality_pass'] = quality & positive_eta
+    bad = (frame.rr_label.eq('bad') | ~frame.dcs_pass.fillna(False)
+           | ~frame.muon_certified | ~positive_eta)
+    frame['label'] = np.select([bad, frame.quality_pass],
+                                ['bad', 'good'], default='unknown')
+    observed = set(frame.run_number)
+    if run_split is None:
+        qualified = frame.loc[quality,
+                              ['run_number', 'era']].drop_duplicates('run_number')
+        try:
+            train, holdout = train_test_split(qualified, train_size=.70, random_state=SEED,
+                                             stratify=qualified.era)
+            validation, _ = train_test_split(holdout, train_size=.5, random_state=SEED,
+                                             stratify=holdout.era)
+        except ValueError as error:
+            raise ValueError('Not enough quality-qualified Good runs for era-stratified 70/15/15 roles') from error
+        roles = {'train': set(train.run_number), 'validation': set(validation.run_number)}
+        roles['test'] = observed-roles['train']-roles['validation']
+    else:
+        roles = {name: set(run_split[name]) for name in ('train', 'validation', 'test')}
+        roles['test'] |= observed-roles['train']-roles['validation']
+    if any(roles[a] & roles[b] for a, b in (('train', 'validation'), ('train', 'test'), ('validation', 'test'))):
+        raise ValueError('Reserved Train/Validation/Test run roles must be disjoint')
+    frame['split'] = 'test'
+    for name in ('train', 'validation'):
+        frame.loc[frame.quality_pass & frame.run_number.isin(roles[name]), 'split'] = name
+    seen_run = frame.run_number.isin(roles['train'] | roles['validation'])
+    frame['test_group'] = np.where(frame.split.eq('test'),
+        np.where(seen_run, 'seen_run_quality_fail', 'held_out_run'), '')
+    return frame, {name: sorted(int(run) for run in members) for name, members in roles.items()}
+
+
+def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False, quality_split=False):
     """Read each selected parquet once; skip runs missing a selected ME.
 
-    Training splits discovered Muon0 PromptReco runs before excluding incomplete caches.
+    Legacy training splits discovered Muon0 PromptReco runs before excluding incomplete caches.
     Each physical run must have one processing to avoid duplicated training LS.
     Inference accepts any cached dataset unless prompt_reco is requested, with
     every row initially assigned to Test. Native
-    signed bins, ROOT entries and in-range bin totals remain distinct. Only the
-    historical moment representation folds eta. No DIALS calls are made.
+    signed bins, ROOT entries and in-range bin totals remain distinct. Moments
+    retain the signed native axis. quality_split reserves roles
+    only after reading LS quality and complete caches, using the selected years.
+    LS with zero Global Muon eta ROOT entries are excluded from all returned
+    arrays, after reserving physical-run roles. No positive-count threshold
+    is applied. No DIALS calls are made and source cache files are untouched.
     """
     root = DIALS if root is None else Path(root)
     runs = pd.DataFrame(cached_runs(root), columns=["dataset", "run_number"])
-    if split or prompt_reco:
+    if split or prompt_reco or quality_split:
         runs = runs.loc[runs.dataset.str.contains(PROMPT_RECO_PATTERN, na=False)].copy()
     run_years = runs.dataset.str.extract(r"/Run(20\d\d)")[0]
     if years is not None:
@@ -142,11 +202,11 @@ def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False):
     if run_years.isna().any():
         raise ValueError("Cannot determine DCS year from a cached dataset name")
     selected_years = sorted(run_years.astype(int).unique().tolist())
-    if (split or prompt_reco) and runs.run_number.duplicated(keep=False).any():
+    if (split or prompt_reco or quality_split) and runs.run_number.duplicated(keep=False).any():
         repeated = runs.loc[runs.run_number.duplicated(keep=False), ["run_number", "dataset"]]
         raise ValueError("Multiple PromptReco processings for the same run; select one cache processing "
                          "per run:\n" + repeated.to_string(index=False))
-    if split:
+    if split or quality_split:
         labels = load_run_labels(selected_years)
     else:
         available_years = [year for year in selected_years if (RR_DATA / f"{year}.json").is_file()]
@@ -156,7 +216,7 @@ def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False):
         labels = load_run_labels(available_years) if available_years else pd.Series(dtype="object")
     runs["label"] = runs.run_number.map(labels).fillna("unknown")
     runs["era"] = runs.dataset.str.extract(r"Run(20\d\d[A-Z])")[0].fillna("unknown")
-    if split:
+    if split and not quality_split:
         good = runs[runs.label.eq("good")]
         try:
             train, holdout = train_test_split(good, train_size=.70, random_state=SEED, stratify=good.era)
@@ -228,8 +288,7 @@ def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False):
             histograms[target][start:stop] = contents
             totals[start:stop, target] = contents.sum(axis=1, dtype=np.int64)
             root_entries[start:stop, target] = fills
-            features[start:stop, 2*target:2*target+2] = _moments(
-                contents, low, high, eta=stem.endswith("__GlbMuon_Glb_eta"))
+            features[start:stop, 2*target:2*target+2] = _moments(contents, low, high)
             entries[stem] = fills
         global_entries = [fills for me, fills in entries.items()
                           if me.startswith(("Muons__Isolation__global__", "Muons__MuonRecoAnalyzer__GlbMuon_Glb_"))]
@@ -245,24 +304,41 @@ def load_dataset(root=DIALS, *, split=True, years=None, prompt_reco=False):
             print(f"Loaded {index}/{len(runs)} runs", flush=True)
     frame = pd.concat(frames, ignore_index=True)[IDS + ["era", "label", "split", "eta_entries"]]
     frame = frame.join(select(frame, intervals, root_entries[:, MODEL_MES.index(phi_me)]))
-    return {"frame": frame, "histograms": histograms, "totals": totals,
+    dataset = {"frame": frame, "histograms": histograms, "totals": totals,
             "root_entries": root_entries, "axes": axes,
             "features": features, "me_names": list(MODEL_MES),
             "run_split": {name: sorted(int(run) for run in members & set(runs.run_number))
                           for name, members in run_split.items()}}
+    if quality_split:
+        dataset['frame'], dataset['run_split'] = assign_quality_splits(frame)
+        dataset['split_policy'] = SPLIT_POLICY
+    positive_eta = dataset['frame'].eta_entries.gt(0).to_numpy()
+    excluded = int((~positive_eta).sum())
+    dataset['excluded_zero_eta_ls'] = excluded
+    if excluded:
+        dataset['frame'] = dataset['frame'].loc[positive_eta].reset_index(drop=True)
+        dataset['features'] = features[positive_eta]
+        dataset['histograms'] = [histogram[positive_eta] for histogram in histograms]
+        dataset['totals'] = totals[positive_eta]
+        dataset['root_entries'] = root_entries[positive_eta]
+        print(f'Excluded {excluded:,} LS with zero Global Muon eta ROOT entries', flush=True)
+    return dataset
 
 
-def validation_roles(frame):
-    """Separate validation runs for monitoring and calibration; remove special controls."""
-    runs = frame.loc[frame.split.eq("validation") & frame.label.eq("good"),
+def validation_roles(frame, *, quality_split=False):
+    """Separate validation runs; only the legacy policy excludes special controls."""
+    selected = frame.split.eq('validation')
+    if not quality_split:
+        selected &= frame.label.eq('good')
+    runs = frame.loc[selected,
                      ["run_number", "era"]].drop_duplicates()
     monitoring, calibration = train_test_split(runs, test_size=.5, random_state=SEED, stratify=runs.era)
-    return {"monitor_runs": sorted(int(run) for run in monitoring.run_number if run not in SPECIAL_RUNS),
-            "calibration_runs": sorted(int(run) for run in calibration.run_number if run not in SPECIAL_RUNS)}
+    return {"monitor_runs": sorted(int(run) for run in monitoring.run_number if quality_split or run not in SPECIAL_RUNS),
+            "calibration_runs": sorted(int(run) for run in calibration.run_number if quality_split or run not in SPECIAL_RUNS)}
 
 
 def fingerprint(dataset):
-    """Identify actual counts, the current run split/RR labels and DCS selection."""
+    """Identify actual counts, labels, splits and applicable quality metadata."""
     years = sorted(dataset["frame"].dataset.str.extract(r"/Run(20\d\d)")[0].astype(int).unique())
     if len(years) == 1:
         digest = hashlib.sha256((DCS_DATA / f"{years[0]}.json").read_bytes())
@@ -272,7 +348,17 @@ def fingerprint(dataset):
             digest.update(f"{year}:".encode())
             digest.update((DCS_DATA / f"{year}.json").read_bytes())
             digest.update(b"\0")
-    digest.update(dataset["frame"][IDS + ["split", "label"]].to_csv(index=False).encode())
+    columns = IDS + ['split', 'label'] + [name for name in
+        ('rr_label', 'muon_certified', 'quality_pass', 'test_group') if name in dataset['frame']]
+    if dataset.get('ls_grouping'):
+        columns += ['ls_end', 'n_ls', 'eta_entries']
+    if 'recorded_lumi_pb' in dataset['frame']:
+        columns.append('recorded_lumi_pb')
+    digest.update(dataset['frame'][columns].to_csv(index=False).encode())
+    if dataset.get('ls_grouping'):
+        digest.update(json.dumps(dataset['ls_grouping'], sort_keys=True).encode())
+    if dataset.get('split_policy'):
+        digest.update(dataset['split_policy'].encode())
     for hist in dataset["histograms"]:
         digest.update(memoryview(np.ascontiguousarray(hist)))
     return digest.hexdigest()

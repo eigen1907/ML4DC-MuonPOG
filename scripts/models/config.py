@@ -10,6 +10,8 @@ RR_DATA = Path("data/rr")
 DCS_DATA = Path("data/dcs")
 IDS = ["dataset", "run_number", "ls_number"]
 SEED = 42
+LS_MODES = ('ls_no_group', 'ls_group_1000glb', 'ls_group_7pb', 'ls_group_1pb')
+SPLIT_POLICY = "rr_dcs_muon_positive_eta_v1"
 SPECIAL_RUNS = (398902, 398903)
 
 # Fixed historical examples, not training or threshold selections.
@@ -31,19 +33,19 @@ MODEL_MES = (
     "Muons__standAloneMuonsUpdatedAtVtx__HitProperties__NumberOfValidRecHitsPerTrack_sta",
 )
 
-FEATURE_AE = "01_ae_2feat"
-PILEUP_AE = "02_ae_2feat_pileup"
-MDN = "04_mdn"
-SHARED_GMM_AE = "05_ae_gmm_shared"
-KDE_AE = "06_ae_kde"
-KDE_MMD_AE = "06_ae_kde_mmd"
+REFERENCE_SCORE = "00_ref_score"
+TWO_FEATURE_AE = "01_ae_2feat"
+GMM_MSE = "02_ae_gmm_mse"
+GMM_DEVIANCE = "03_ae_gmm_deviance"
+GMM_NORM_DEVIANCE = "04_ae_gmm_deviance_norm_me_bin"
+MAIN_EXPERIMENT = GMM_DEVIANCE
+DEFAULT_LS_MODE = "ls_group_1pb"
+MAIN_PREDICTIONS = OUT / "predict" / DEFAULT_LS_MODE / MAIN_EXPERIMENT
 EXPERIMENTS = {
-    FEATURE_AE: "Mean/std AE trained on Good DCS-pass LS; no entry cut",
-    PILEUP_AE: "Mean/std AE conditioned on OMS pile-up; pile-up is not reconstructed",
-    MDN: "Pile-up-conditioned Gaussian-mixture histogram density network",
-    SHARED_GMM_AE: "30 fixed Good-training Gaussians per ME, LS weights and a conditional AE",
-    KDE_AE: "Binned KDE histogram inputs and a pile-up-conditioned AE",
-    KDE_MMD_AE: "Reuse the KDE AE with count-corrected MMD shape scores",
+    TWO_FEATURE_AE: "Mean/std AE using signed eta; no external model inputs",
+    GMM_MSE: "Masked free16 GMM AE with bin-normalized Input–Predict MSE",
+    GMM_DEVIANCE: "Masked free16 GMM AE with Input–Predict count deviance loss and score",
+    GMM_NORM_DEVIANCE: "Masked free16 GMM AE with frozen Good-Train ME/bin-normalized deviance",
 }
 
 
