@@ -1,10 +1,12 @@
-"""Collect one compact JSON file per source and year."""
+"""Collect annual DCS/OMS/RR metadata and official Muon certification masks."""
 
 import argparse
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from urllib.parse import parse_qsl, urlsplit
 
@@ -81,6 +83,69 @@ def dcs_collect(years, *, session=None):
                     raise ValueError("Invalid inclusive DCS LS range")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(response.content)
+
+
+def validate_lumi_mask(payload):
+    """Validate the standard inclusive CMS run-to-LS-interval JSON format."""
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError('Expected a nonempty CMS run/LS certification JSON')
+    for run, ranges in payload.items():
+        if not str(run).isdigit() or int(run) <= 0 or not isinstance(ranges, list):
+            raise ValueError('Invalid certification run')
+        for pair in ranges:
+            if (not isinstance(pair, list) or len(pair) != 2
+                    or any(type(x) is not int for x in pair) or not 0 < pair[0] <= pair[1]):
+                raise ValueError('Invalid inclusive certification LS range')
+
+
+def muon_collect(years, *, session=None):
+    """Save official Muon masks verbatim, with separate 2025/2026 low-PU masks.
+
+    Exact case-insensitive filename matching excludes per-era, pp-reference
+    and before-review alternatives. Choose the largest ending run, not the
+    directory's incidental ordering. URLs and byte hashes are printed so a
+    collected snapshot can be identified without another manifest file.
+    """
+    session = session or requests.Session()
+    for year in years:
+        if year not in (2024, 2025, 2026):
+            raise ValueError('Supported Muon certification years: 2024–2026')
+        base = f'https://cms-service-dqmdc.web.cern.ch/CAF/certification/Collisions{str(year)[-2:]}/'
+        listing = session.get(base, timeout=60)
+        listing.raise_for_status()
+        names = {link.rsplit('/', 1)[-1] for link in
+                 re.findall(r'href=[\"\']([^\"\']+)[\"\']', listing.text, re.IGNORECASE)}
+        pattern = re.compile(rf'Cert_Collisions{year}_(\d+)_(\d+)_muon\.json', re.IGNORECASE)
+        candidates = [(int(match[2]), int(match[1]), name) for name in names
+                      if (match := pattern.fullmatch(name))]
+        if not candidates:
+            raise ValueError(f'No official Muon certification JSON found for {year}')
+        targets = [(max(candidates)[2], DATA/'rr'/f'{year}_muon.json')]
+        if year == 2025:
+            low_pu = next((name for preferred in ('2025_lowpu_updated.json', '2025_lowpu.json')
+                           for name in names if name.lower() == preferred), None)
+            if low_pu is None:
+                raise ValueError('No official 2025 low-PU certification JSON found')
+            targets.append((low_pu, DATA/'rr'/'2025_lowPU.json'))
+        if year == 2026:
+            low_pu = [name for name in names if name.lower() == f'cert_collisions{year}_lowpu.json']
+            if len(low_pu) != 1:
+                raise ValueError('Expected one official 2026 low-PU certification JSON')
+            targets.append((low_pu[0], DATA/'rr'/'2026_lowPU.json'))
+        for name, path in targets:
+            response = session.get(base + name, timeout=60)
+            if (year == 2025 and name.lower() == '2025_lowpu_updated.json'
+                    and response.status_code == 404):
+                fallback = next((item for item in names if item.lower() == '2025_lowpu.json'), None)
+                if fallback is not None:
+                    name = fallback
+                    response = session.get(base + name, timeout=60)
+            payload = json_response(response)
+            validate_lumi_mask(payload)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(response.content)
+            digest = hashlib.sha256(response.content).hexdigest()
+            print(f'{path}: {base + name}\n  sha256 {digest}')
 
 
 def oms_pages(session, endpoint, query):
@@ -253,7 +318,7 @@ def selected_runs(years=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("source", choices=("dcs", "oms", "rr"))
+    parser.add_argument("source", choices=("dcs", "oms", "rr", "muon"))
     parser.add_argument("--years", type=int, nargs="+")
     parser.add_argument("--runs", type=int, nargs="+", help="OMS run selection")
     args = parser.parse_args()
@@ -264,6 +329,8 @@ def main():
     setup_tls()
     if args.source == "dcs":
         dcs_collect(args.years or [2023, 2024, 2025, 2026])
+    elif args.source == "muon":
+        muon_collect(args.years or [2024, 2025, 2026])
     elif args.source == "rr":
         session = rr_session()
         for year in args.years or [2025]:
